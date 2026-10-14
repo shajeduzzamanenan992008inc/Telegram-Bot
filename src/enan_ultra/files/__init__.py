@@ -1,0 +1,1 @@
+"""Extensible file ingestion adapters."""
