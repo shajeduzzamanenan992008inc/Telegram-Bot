@@ -15,22 +15,25 @@ import httpx
 
 from enan_ultra.config import Settings
 from enan_ultra.models import AssistantResult
+from enan_ultra.services.key_rotation import KeyRotation
 
 logger = logging.getLogger(__name__)
 TokenCallback = Callable[[str], Awaitable[None]]
 
 
 class ProviderError(RuntimeError):
-    pass
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class OpenRouter:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self.key_rotation = KeyRotation("openrouter", settings.openrouter_keys)
         self.client = httpx.AsyncClient(
             base_url=settings.openrouter_base_url,
             headers={
-                "Authorization": f"Bearer {settings.openrouter_key}",
                 "Content-Type": "application/json",
                 "X-OpenRouter-Title": settings.display_name,
             },
@@ -40,6 +43,41 @@ class OpenRouter:
         )
         self._models_cache: tuple[float, list[dict[str, Any]]] = (0, [])
 
+    async def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+        original_headers = dict(kwargs.pop("headers", {}) or {})
+
+        async def request(key: str | None, _key_index: int) -> httpx.Response:
+            headers = dict(original_headers)
+            if key:
+                headers["Authorization"] = f"Bearer {key}"
+            response = await self.client.request(method, url, headers=headers, **kwargs)
+            if response.status_code in KeyRotation.RETRYABLE_STATUS_CODES:
+                raise ProviderError(
+                    f"OpenRouter request failed ({response.status_code})", response.status_code,
+                )
+            return response
+
+        return await self.key_rotation.run(request)
+
+    async def _stream_request(
+        self, method: str, url: str, consume: Callable[[httpx.Response], Awaitable[Any]],
+        **kwargs: Any,
+    ) -> Any:
+        original_headers = dict(kwargs.pop("headers", {}) or {})
+
+        async def request(key: str | None, _key_index: int) -> Any:
+            headers = dict(original_headers)
+            if key:
+                headers["Authorization"] = f"Bearer {key}"
+            async with self.client.stream(method, url, headers=headers, **kwargs) as response:
+                if response.status_code in KeyRotation.RETRYABLE_STATUS_CODES:
+                    raise ProviderError(
+                        f"OpenRouter request failed ({response.status_code})", response.status_code,
+                    )
+                return await consume(response)
+
+        return await self.key_rotation.run(request)
+
     async def close(self) -> None:
         await self.client.aclose()
 
@@ -48,7 +86,7 @@ class OpenRouter:
         if self._models_cache[0] > now:
             data = self._models_cache[1]
         else:
-            response = await self.client.get("/models")
+            response = await self._request("GET", "/models")
             response.raise_for_status()
             payload = response.json()
             data = payload.get("data", [])
@@ -165,8 +203,10 @@ class OpenRouter:
                     result = await self._completion_for_model(
                         model, messages, request_tools, max_tokens, on_token if not request_tools else None,
                     )
-                except ProviderError:
+                except ProviderError as exc:
                     if not web_search or not request_tools:
+                        raise
+                    if exc.status_code in KeyRotation.RETRYABLE_STATUS_CODES:
                         raise
                     # Server-side web search is beta; retry with the ordinary function tools only.
                     without_web = [tool for tool in request_tools if tool.get("type") != "openrouter:web_search"]
@@ -178,6 +218,8 @@ class OpenRouter:
             except (httpx.TimeoutException, httpx.NetworkError, ProviderError) as exc:
                 last_error = exc
                 logger.warning("OpenRouter model attempt %d failed (%s)", index + 1, type(exc).__name__)
+                if isinstance(exc, ProviderError) and exc.status_code in KeyRotation.RETRYABLE_STATUS_CODES:
+                    raise
                 continue
             except Exception as exc:
                 last_error = exc
@@ -205,12 +247,12 @@ class OpenRouter:
             payload["tool_choice"] = "auto"
             payload["parallel_tool_calls"] = False
         if not on_token:
-            response = await self.client.post("/chat/completions", json=payload)
+            response = await self._request("POST", "/chat/completions", json=payload)
             if response.status_code >= 400:
                 # Auth and balance errors are global; model fallback will not fix them.
                 if response.status_code in {401, 402, 403}:
-                    raise ProviderError(f"OpenRouter request rejected ({response.status_code})")
-                raise ProviderError(f"OpenRouter request failed ({response.status_code})")
+                    raise ProviderError(f"OpenRouter request rejected ({response.status_code})", response.status_code)
+                raise ProviderError(f"OpenRouter request failed ({response.status_code})", response.status_code)
             body = response.json()
             choices = body.get("choices") or []
             if not choices:
@@ -235,11 +277,11 @@ class OpenRouter:
 
         answer_parts: list[str] = []
         usage: dict[str, Any] = {}
-        async with self.client.stream("POST", "/chat/completions", json=payload) as response:
+        async def consume(response: httpx.Response) -> AssistantResult:
             if response.status_code >= 400:
                 if response.status_code in {401, 402, 403}:
-                    raise ProviderError(f"OpenRouter request rejected ({response.status_code})")
-                raise ProviderError(f"OpenRouter request failed ({response.status_code})")
+                    raise ProviderError(f"OpenRouter request rejected ({response.status_code})", response.status_code)
+                raise ProviderError(f"OpenRouter request failed ({response.status_code})", response.status_code)
             async for line in response.aiter_lines():
                 if not line.startswith("data:"):
                     continue
@@ -259,10 +301,12 @@ class OpenRouter:
                 if isinstance(token, str) and token:
                     answer_parts.append(token)
                     await on_token(token)
-        streamed_text = "".join(answer_parts).strip()
-        if not streamed_text:
-            raise ProviderError("OpenRouter stream returned no text")
-        return AssistantResult(text=streamed_text, model=model, usage=usage)
+            streamed_text = "".join(answer_parts).strip()
+            if not streamed_text:
+                raise ProviderError("OpenRouter stream returned no text")
+            return AssistantResult(text=streamed_text, model=model, usage=usage)
+
+        return await self._stream_request("POST", "/chat/completions", consume, json=payload)
 
     async def transcribe(self, data: bytes, filename: str, mime_type: str) -> str:
         models = await self.models(input_modality="audio")
@@ -275,18 +319,20 @@ class OpenRouter:
         last_error: Exception | None = None
         for index, model in enumerate(candidates):
             try:
-                response = await self.client.post(
-                    "/audio/transcriptions", data={"model": model},
+                response = await self._request(
+                    "POST", "/audio/transcriptions", data={"model": model},
                     files={"file": (filename, data, mime_type or "application/octet-stream")},
                     headers={"Content-Type": None},
                     timeout=httpx.Timeout(connect=10, read=180, write=60, pool=10),
                 )
                 if response.status_code >= 400:
-                    raise ProviderError(f"Speech transcription failed ({response.status_code})")
+                    raise ProviderError(f"Speech transcription failed ({response.status_code})", response.status_code)
                 return str(response.json().get("text", "")).strip()
             except Exception as exc:
                 last_error = exc
                 logger.warning("STT model attempt %d failed (%s)", index + 1, type(exc).__name__)
+                if isinstance(exc, ProviderError) and exc.status_code in KeyRotation.RETRYABLE_STATUS_CODES:
+                    raise
         raise ProviderError(f"All audio transcription models failed ({type(last_error).__name__ if last_error else 'unknown'})")
 
     async def synthesize(self, text: str, voice: str | None = None) -> bytes:
@@ -300,14 +346,12 @@ class OpenRouter:
         last_error: Exception | None = None
         for index, model in enumerate(candidates):
             try:
-                output = bytearray()
-                async with self.client.stream(
-                    "/audio/speech",
-                    json={"model": model, "input": text[:4000], "voice": voice or self.settings.tts_voice, "response_format": "mp3"},
-                    timeout=httpx.Timeout(connect=10, read=120, write=45, pool=10),
-                ) as response:
+                async def consume(response: httpx.Response) -> bytes:
                     if response.status_code >= 400:
-                        raise ProviderError(f"Speech generation failed ({response.status_code})")
+                        raise ProviderError(
+                            f"Speech generation failed ({response.status_code})", response.status_code,
+                        )
+                    output = bytearray()
                     declared = response.headers.get("content-length")
                     if declared and int(declared) > self.settings.max_upload_bytes:
                         raise ProviderError("Speech output exceeds MAX_UPLOAD_BYTES")
@@ -315,10 +359,18 @@ class OpenRouter:
                         output.extend(part)
                         if len(output) > self.settings.max_upload_bytes:
                             raise ProviderError("Speech output exceeds MAX_UPLOAD_BYTES")
-                return bytes(output)
+                    return bytes(output)
+
+                return await self._stream_request(
+                    "POST", "/audio/speech", consume,
+                    json={"model": model, "input": text[:4000], "voice": voice or self.settings.tts_voice, "response_format": "mp3"},
+                    timeout=httpx.Timeout(connect=10, read=120, write=45, pool=10),
+                )
             except Exception as exc:
                 last_error = exc
                 logger.warning("TTS model attempt %d failed (%s)", index + 1, type(exc).__name__)
+                if isinstance(exc, ProviderError) and exc.status_code in KeyRotation.RETRYABLE_STATUS_CODES:
+                    raise
         raise ProviderError(f"All speech output models failed ({type(last_error).__name__ if last_error else 'unknown'})")
 
     def _modality_candidates(self, records: list[dict[str, Any]], preferred: str | None) -> list[str]:
@@ -338,9 +390,11 @@ class OpenRouter:
         last_error: Exception | None = None
         for index, model in enumerate(candidates):
             try:
-                response = await self.client.post("/images/generations", json={"model": model, "prompt": prompt[:2000]})
+                response = await self._request(
+                    "POST", "/images/generations", json={"model": model, "prompt": prompt[:2000]},
+                )
                 if response.status_code >= 400:
-                    raise ProviderError(f"Image generation failed ({response.status_code})")
+                    raise ProviderError(f"Image generation failed ({response.status_code})", response.status_code)
                 item = (response.json().get("data") or [{}])[0]
                 if item.get("b64_json"):
                     encoded = item["b64_json"]
@@ -357,6 +411,8 @@ class OpenRouter:
             except Exception as exc:
                 last_error = exc
                 logger.warning("Image model attempt %d failed (%s)", index + 1, type(exc).__name__)
+                if isinstance(exc, ProviderError) and exc.status_code in KeyRotation.RETRYABLE_STATUS_CODES:
+                    raise
         raise ProviderError(f"All image generation models failed ({type(last_error).__name__ if last_error else 'unknown'})")
 
     async def _download_external_image(self, url: str) -> bytes:
@@ -378,9 +434,11 @@ class OpenRouter:
                 return bytes(output)
 
     async def image_models(self) -> list[dict[str, Any]]:
-        response = await self.client.get("/images/models")
+        response = await self._request("GET", "/images/models")
         if response.status_code >= 400:
-            raise ProviderError(f"Image model catalog failed ({response.status_code})")
+            raise ProviderError(
+                f"Image model catalog failed ({response.status_code})", response.status_code,
+            )
         return response.json().get("data", [])
 
     async def estimate_image_cost(self) -> float:
@@ -394,12 +452,12 @@ class OpenRouter:
             return self.settings.image_cost_reserve_usd
 
     async def upload_file(self, data: bytes, filename: str, mime_type: str) -> str:
-        response = await self.client.post(
-            "/files", files={"file": (filename, data, mime_type or "application/octet-stream")},
+        response = await self._request(
+            "POST", "/files", files={"file": (filename, data, mime_type or "application/octet-stream")},
             headers={"Content-Type": None}, timeout=httpx.Timeout(connect=10, read=90, write=90, pool=10),
         )
         if response.status_code >= 400:
-            raise ProviderError(f"OpenRouter file upload failed ({response.status_code})")
+            raise ProviderError(f"OpenRouter file upload failed ({response.status_code})", response.status_code)
         return str(response.json().get("id", ""))
 
     async def complete_with_file(self, prompt: str, filename: str, mime_type: str, file_id: str, primary_model: str | None = None) -> AssistantResult:
@@ -410,7 +468,7 @@ class OpenRouter:
         return await self.complete([{"role": "user", "content": content}], primary_model=primary_model, modality="file")
 
     async def delete_file(self, file_id: str) -> None:
-        response = await self.client.delete(f"/files/{quote(file_id, safe='')}")
+        response = await self._request("DELETE", f"/files/{quote(file_id, safe='')}")
         if response.status_code not in {200, 204, 404}:
             response.raise_for_status()
 

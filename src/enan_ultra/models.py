@@ -48,6 +48,9 @@ class UserProfile:
     agents_enabled: bool = True
     kb_enabled: bool = False
     study_enabled: bool = False
+    response_format: str = "text"
+    persona: str = "default"
+    custom_instructions: str = ""
 
 
 @dataclass(frozen=True, slots=True)

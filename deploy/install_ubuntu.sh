@@ -30,9 +30,17 @@ if [[ -z "${UV_BIN}" ]]; then
   echo "uv was not found after installation." >&2
   exit 1
 fi
-"${UV_BIN}" python install 3.15.0
+PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
+case "${PYTHON_VERSION}" in
+  3.11|3.12|3.13|3.14|3.15) ;;
+  *)
+    echo "PYTHON_VERSION must be one of 3.11, 3.12, 3.13, 3.14, or 3.15." >&2
+    exit 1
+    ;;
+esac
+"${UV_BIN}" python install "${PYTHON_VERSION}"
 cd "${APP_DIR}"
-"${UV_BIN}" sync --locked --python 3.15.0 --no-dev --group build
+"${UV_BIN}" sync --locked --python "${PYTHON_VERSION}" --no-dev --group build
 install -m 0644 deploy/telegram-ai.service /etc/systemd/system/telegram-ai.service
 install -d -m 0700 -o enan-ultra -g enan-ultra /var/lib/telegram-ai
 if [[ ! -f "${CONFIG_FILE}" ]]; then

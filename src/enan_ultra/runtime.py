@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 
 from telegram import BotCommand, BotCommandScopeChat
@@ -19,6 +20,7 @@ from enan_ultra.services.openrouter import OpenRouter
 from enan_ultra.services.providers import ProviderRouter
 from enan_ultra.services.agents import AgentOrchestrator
 from enan_ultra.services.code_sandbox import CodeSandbox
+from enan_ultra.services.health import resource_metrics
 from enan_ultra.services.integrations import HomeAssistantClient, VMControl, install_sanitized_log_buffer
 from enan_ultra.storage.database import Database
 
@@ -34,7 +36,7 @@ def build_application(settings: Settings) -> Application:
         settings.max_pending_reminders, settings.app_data_key,
         settings.kb_max_documents, settings.kb_max_bytes,
     )
-    openrouter = OpenRouter(settings) if settings.openrouter_key else None
+    openrouter = OpenRouter(settings) if settings.openrouter_keys else None
     router = ProviderRouter(settings, openrouter)
     home_assistant = HomeAssistantClient(settings) if settings.ha_base_url else None
     vm_control = VMControl()
@@ -56,13 +58,19 @@ def build_application(settings: Settings) -> Application:
         await handlers.register_commands(app)
         try:
             admin_commands = [
-                BotCommand("model", "বর্তমান AI model বদলান"),
-                BotCommand("models", "Configured provider model তালিকা"),
+                BotCommand("model", "Change the current AI model"),
+                BotCommand("models", "List models from configured providers"),
                 BotCommand("status", "Bot status"),
-                BotCommand("end", "একটি live session বন্ধ"),
-                BotCommand("endall", "সব live session বন্ধ"),
+                BotCommand("end", "End a live session"),
+                BotCommand("endall", "End all live sessions"),
+                BotCommand("clearuser", "Clear a user's conversation memory"),
+                BotCommand("resetuser", "Clear a user's conversation memory"),
                 BotCommand("device", "Allowlisted Home Assistant control"),
                 BotCommand("vm", "Bot service status/restart"),
+                BotCommand("block", "Block a user's bot access"),
+                BotCommand("unblock", "Unblock a user's bot access"),
+                BotCommand("tasks", "Manage your personal task list"),
+                BotCommand("search", "Search recent chat history"),
             ]
             await app.bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(settings.admin_chat_id))
         except Exception as exc:
@@ -120,23 +128,96 @@ def build_application(settings: Settings) -> Application:
 async def _maintenance(app: Application, db: Database, router: ProviderRouter, settings: Settings) -> None:
     while True:
         try:
+            await _monitor_resources(app, db, settings)
+            await _scheduled_backup(app, db, settings)
             await db.cleanup_documents()
             await db.cleanup_action_executions()
             await db.expire_approvals()
             await _cleanup_provider_files(db, router, settings, app)
-            for reminder in await db.due_reminders():
+            for reminder in await db.claim_due_reminders():
                 try:
                     await app.bot.send_message(
-                        chat_id=reminder["chat_id"], text=f"⏰ রিমাইন্ডার: {reminder['reminder_text']}"
+                        chat_id=reminder["chat_id"], text=f"⏰ Reminder: {reminder['reminder_text']}"
                     )
                     await db.mark_reminder_delivered(int(reminder["id"]))
                 except Exception as exc:
-                    logger.info("Reminder delivery deferred (%s)", type(exc).__name__)
+                    attempts = int(reminder.get("attempts", 1))
+                    retry_after = min(60 * 2 ** min(max(attempts - 1, 0), 10), 86400)
+                    await db.defer_reminder(int(reminder["id"]), retry_after)
+                    logger.warning("Reminder delivery deferred; attempt=%s retry_in=%ss (%s)",
+                                   attempts, retry_after, type(exc).__name__)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             logger.warning("Maintenance cycle failed (%s)", type(exc).__name__)
         await asyncio.sleep(60)
+
+
+async def _monitor_resources(app: Application, db: Database, settings: Settings) -> None:
+    resources = resource_metrics(db.path)
+    alerts: list[str] = []
+    if resources["disk_free_bytes"] < 1024 * 1024 * 1024:
+        free_gb = resources["disk_free_bytes"] / (1024 ** 3)
+        alerts.append(f"Only {free_gb:.2f} GiB is free on the database volume.")
+    memory_used = resources["memory_used_percent"]
+    if memory_used is not None and memory_used >= 95:
+        alerts.append(f"System memory usage is {memory_used:.1f}%.")
+    if not alerts:
+        return
+    logger.warning("Resource pressure detected: %s", "; ".join(alerts))
+    if not settings.admin_alerts:
+        return
+    now = datetime.now(UTC)
+    previous_value = await db.get_setting("last_resource_alert")
+    previous = datetime.fromisoformat(previous_value) if previous_value else None
+    if previous is not None and now - previous < timedelta(hours=6):
+        return
+    try:
+        await app.bot.send_message(
+            settings.admin_chat_id,
+            "⚠️ Server resource alert:\n" + "\n".join(alerts),
+        )
+        await db.set_setting("last_resource_alert", now.isoformat())
+    except Exception as exc:
+        logger.warning("Resource alert delivery failed (%s)", type(exc).__name__)
+
+
+async def _scheduled_backup(app: Application, db: Database, settings: Settings) -> None:
+    now = datetime.now(UTC)
+    previous_value = await db.get_setting("last_scheduled_backup")
+    previous = datetime.fromisoformat(previous_value) if previous_value else None
+    if previous is not None and now - previous < timedelta(hours=24):
+        return
+    directory = db.path.parent / "backups"
+    timestamp = now.strftime("%Y%m%dT%H%M%SZ")
+    destination = directory / f"{db.path.stem}-{timestamp}.sqlite3.enc"
+    try:
+        await db.backup_encrypted_to(destination)
+        await db.set_setting("last_scheduled_backup", now.isoformat())
+        pattern = re.compile(rf"^{re.escape(db.path.stem)}-\d{{8}}T\d{{6}}Z\.sqlite3\.enc$")
+        backups = sorted(
+            (path for path in directory.iterdir() if path.is_file() and pattern.fullmatch(path.name)),
+            key=lambda path: path.name,
+            reverse=True,
+        )
+        for stale in backups[7:]:
+            stale.unlink()
+        logger.info("Encrypted scheduled database backup completed")
+    except Exception as exc:
+        logger.error("Scheduled database backup failed (%s)", type(exc).__name__)
+        if not settings.admin_alerts:
+            return
+        previous_alert = await db.get_setting("last_scheduled_backup_alert")
+        last_alert = datetime.fromisoformat(previous_alert) if previous_alert else None
+        if last_alert is None or now - last_alert >= timedelta(hours=6):
+            try:
+                await app.bot.send_message(
+                    settings.admin_chat_id,
+                    "⚠️ The scheduled encrypted database backup failed. Check server storage and the APP_DATA_KEY configuration.",
+                )
+                await db.set_setting("last_scheduled_backup_alert", now.isoformat())
+            except Exception as alert_exc:
+                logger.warning("Scheduled backup alert failed (%s)", type(alert_exc).__name__)
 
 
 async def _cleanup_provider_files(db: Database, router: ProviderRouter, settings: Settings, app: Application) -> None:
@@ -156,7 +237,7 @@ async def _cleanup_provider_files(db: Database, router: ProviderRouter, settings
             if last_sent is None or current - last_sent >= timedelta(hours=1):
                 await app.bot.send_message(
                     settings.admin_chat_id,
-                    "⚠️ OpenRouter-এ একটি বা একাধিক temporary file delete করা যায়নি। Bot retry করছে; provider dashboard-এ cleanup দেখুন।",
+                    "⚠️ One or more temporary files could not be deleted from OpenRouter. The bot is retrying; check cleanup in the provider dashboard.",
                 )
                 await db.set_setting("last_provider_cleanup_alert", current.isoformat())
         except Exception as exc:

@@ -16,6 +16,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from enan_ultra.config import Settings
+from enan_ultra.services.health import health_snapshot
 
 logger = logging.getLogger(__name__)
 _PAGE = r"""<!doctype html>
@@ -34,6 +35,7 @@ main{max-width:1240px;margin:auto;padding:28px 22px 64px}.top{display:flex;justi
 <div class="grid"><article class="card"><h2>Service</h2><div class="metric" id="service">—</div><div class="small" id="uptime">Waiting for telemetry</div></article><article class="card"><h2>Requests today</h2><div class="metric" id="requests">—</div><div class="small">Across all chats</div></article><article class="card"><h2>Reserved / reported cost</h2><div class="metric" id="cost">—</div><div class="small">USD today</div></article><article class="card"><h2>Review queue</h2><div class="metric" id="queue">—</div><div class="small" id="agents">Running agent jobs</div></article>
 <article class="card wide"><h2>Provider constellation</h2><div class="rows list" id="providers"></div></article><article class="card wide"><h2>Feedback signal &amp; improvement proposals</h2><div class="metric"><span id="positive">0</span> <span class="small">positive</span> · <span id="negative">0</span> <span class="small">needs review</span></div><div class="rows list" id="feedback"></div><div class="small">Repeated low ratings suggest categories for manual review; prompts/models are never changed automatically.</div></article>
 <article class="card wide"><h2>Pending approvals</h2><div class="rows list" id="approvals"></div></article><article class="card wide"><h2>Recent specialist jobs</h2><div class="rows list" id="jobs"></div></article>
+<article class="card full"><h2>Active users · conversation memory</h2><div class="rows list" id="users"></div><div class="small">Only private-chat user IDs and activity counts are shown; group history is not listed or cleared.</div></article>
 <article class="card wide"><h2>Service controls</h2><div class="rows" id="vm"></div><pre id="vm-logs" class="small"></pre><button class="button danger" id="restart">Request graceful restart</button><div class="small">Restart requires a separate approval. No shell access.</div></article><article class="card wide"><h2>Home Assistant</h2><div class="rows list" id="ha"></div><div class="small">Only configured entity IDs are shown. State-changing calls require admin approval.</div></article>
 <article class="card full"><h2>Push-to-talk · transcription only</h2><div class="voice"><button class="button" id="record">Start recording</button><button class="button" id="transcribe" disabled>Transcribe</button><output id="voice-state">Microphone access starts only after you press record. Audio is sent to the configured transcription provider and not stored.</output></div><pre id="transcript" class="small"></pre></article>
 <article class="card full"><h2>Recent audit events</h2><div class="rows list" id="audit"></div></article></div></section></main>
@@ -42,10 +44,11 @@ const $=id=>document.getElementById(id), login=$('login'), app=$('app');
 async function api(path,options={}){const r=await fetch(path,{credentials:'same-origin',...options});if(r.status===401){showLogin();throw Error('session expired')}if(!r.ok)throw Error('request failed');return r.json()}
 function showLogin(){login.classList.remove('hide');app.classList.add('hide')}
 function item(container,left,right,kind=''){const row=document.createElement('div');row.className='row';const a=document.createElement('span');a.textContent=left;const b=document.createElement('span');b.textContent=right;b.className=kind;row.append(a,b);container.append(row)}
-async function refresh(){try{const [s,p,u,j,a,v,h,au,f]=await Promise.all(['/api/v1/status','/api/v1/providers','/api/v1/usage','/api/v1/jobs','/api/v1/approvals','/api/v1/vm','/api/v1/home-assistant','/api/v1/audit','/api/v1/feedback'].map(x=>api(x)));app.classList.remove('hide');login.classList.add('hide');$('live').textContent='LIVE';$('service').textContent=s.state;$('uptime').textContent='Uptime '+s.uptime_seconds+' seconds';$('requests').textContent=u.requests_today;$('cost').textContent='$'+Number(u.cost_today_usd).toFixed(4);$('queue').textContent=u.pending_approvals;$('agents').textContent=u.running_agents+' running agent jobs';$('positive').textContent=u.feedback_positive_today;$('negative').textContent=u.feedback_negative_today;
+async function refresh(){try{const [s,p,u,j,a,v,h,au,f,users]=await Promise.all(['/api/v1/status','/api/v1/providers','/api/v1/usage','/api/v1/jobs','/api/v1/approvals','/api/v1/vm','/api/v1/home-assistant','/api/v1/audit','/api/v1/feedback','/api/v1/users'].map(x=>api(x)));app.classList.remove('hide');login.classList.add('hide');$('live').textContent='LIVE';$('service').textContent=s.state;const r=s.resources||{};$('uptime').textContent='Uptime '+s.uptime_seconds+' seconds · RAM '+(r.memory_used_percent===null?'n/a':r.memory_used_percent+'%')+' · Disk '+r.disk_used_percent+'% used · '+Math.round(r.disk_free_bytes/1073741824)+' GB free';$('requests').textContent=u.requests_today;$('cost').textContent='$'+Number(u.cost_today_usd).toFixed(4);$('queue').textContent=u.pending_approvals;$('agents').textContent=u.running_agents+' running agent jobs';$('positive').textContent=u.feedback_positive_today;$('negative').textContent=u.feedback_negative_today;
 const providers=$('providers');providers.replaceChildren();for(const x of p){item(providers,x.provider+' · '+(x.model||'model not configured'),x.status==='healthy'?'ONLINE':x.status.toUpperCase(),x.status==='healthy'?'status':'down')}
 const approvals=$('approvals');approvals.replaceChildren();for(const x of a){const row=document.createElement('div');row.className='row';const label=document.createElement('span');label.textContent='#'+x.id+' · '+x.kind+' · '+x.summary+' · expires '+x.expires_at.slice(11,16)+' UTC';const controls=document.createElement('span');if(x.required_approver==='admin'){for(const [verb,style] of [['approve',''],['deny',' danger']]){const b=document.createElement('button');b.className='button'+style;b.textContent=verb==='approve'?'Approve':'Deny';b.onclick=async()=>{try{await api('/api/v1/approvals/'+x.id+'/'+verb,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});refresh()}catch(e){$('live').textContent='ACTION FAILED'}};controls.append(b)}}else controls.textContent='Requester confirmation required';row.append(label,controls);approvals.append(row)}if(!a.length)approvals.innerHTML='<div class="empty">No pending approvals.</div>';
 const jobs=$('jobs');jobs.replaceChildren();for(const x of j){item(jobs,'#'+x.id+' · '+x.task_type+' · '+x.status,x.step_count+' steps')}if(!j.length)jobs.innerHTML='<div class="empty">No agent jobs yet.</div>';
+const usersList=$('users');usersList.replaceChildren();for(const x of users){const row=document.createElement('div');row.className='row';const label=document.createElement('span');label.textContent='User '+x.user_id+' · '+x.message_count+' messages · '+(x.last_active||'memory only');const clear=document.createElement('button');clear.className='button danger';clear.textContent='Clear Memory';clear.onclick=async()=>{if(!confirm('Clear private conversation history and long-term memory for user '+x.user_id+'?'))return;try{await api('/api/v1/users/'+x.user_id+'/clear-memory',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});refresh()}catch(e){$('live').textContent='CLEAR FAILED'}};row.append(label,clear);usersList.append(row)}if(!users.length)usersList.innerHTML='<div class="empty">No private chat users found.</div>';
 const vm=$('vm');vm.replaceChildren();item(vm,v.service,v.state,v.state==='active'?'status':'down');$('vm-logs').textContent=(v.logs||[]).join('\n')||'No sanitized app logs yet.';
 const feedback=$('feedback');feedback.replaceChildren();for(const x of f)item(feedback,x.category,x.negative_count+' ratings · '+x.suggestion);if(!f.length)feedback.innerHTML='<div class="empty">No repeated negative category yet.</div>';
 const ha=$('ha');ha.replaceChildren();for(const x of h){item(ha,x.entity_id,x.state)}if(!h.length)ha.innerHTML='<div class="empty">No configured/available allowlisted entities.</div>';
@@ -158,7 +161,13 @@ class AdminDashboard:
         async def status(request: Request):
             await self._require_admin(request)
             return {"state": "active", "uptime_seconds": int(time.monotonic() - self.started_at),
-                    "dashboard": "loopback", "active_live_sessions": await self.db.active_live_count()}
+                    "dashboard": "loopback", "active_live_sessions": await self.db.active_live_count(),
+                    "resources": health_snapshot(self.settings.database_path)["resources"]}
+
+        @app.get("/api/v1/health")
+        async def health(request: Request):
+            await self._require_admin(request)
+            return health_snapshot(self.settings.database_path)
 
         @app.get("/api/v1/providers")
         async def providers(request: Request):
@@ -169,6 +178,25 @@ class AdminDashboard:
         async def usage(request: Request):
             await self._require_admin(request)
             return await self.db.dashboard_metrics()
+
+        @app.get("/api/v1/users")
+        async def users(request: Request):
+            await self._require_admin(request)
+            return await self.db.active_users()
+
+        @app.post("/api/v1/users/{user_id}/clear-memory")
+        async def clear_user_memory(user_id: int, request: Request):
+            await self._require_admin(request)
+            await self._same_origin(request)
+            if user_id <= 0:
+                raise HTTPException(status_code=400, detail="A positive private-chat user ID is required")
+            await self.db.clear_user_conversation(user_id)
+            admin_id = min(self.settings.effective_admin_user_ids)
+            await self.db.audit(
+                admin_id, "memory.clear", str(user_id),
+                "private history and long-term memory cleared",
+            )
+            return {"ok": True}
 
         @app.get("/api/v1/feedback")
         async def feedback(request: Request):
@@ -252,9 +280,10 @@ class AdminDashboard:
             event_id, limit = await self.db.reserve_usage(
                 admin_id, "dashboard-voice", estimate, self.settings.user_daily_request_limit,
                 self.settings.max_daily_cost_usd,
+                self.settings.user_monthly_request_limit, self.settings.user_monthly_cost_limit_usd,
             )
             if event_id is None:
-                raise HTTPException(status_code=429, detail=f"Daily {limit or 'usage'} limit reached")
+                raise HTTPException(status_code=429, detail=f"{limit or 'usage'} limit reached")
             try:
                 text = await self.router.transcribe(bytes(body), "dashboard-voice.webm", request.headers.get("content-type", "audio/webm"))
                 await self.db.finish_usage(event_id, "dashboard-voice", {})

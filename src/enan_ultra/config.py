@@ -49,6 +49,10 @@ def _csv(name: str) -> tuple[str, ...]:
     return tuple(part.strip() for part in _value(name).split(",") if part.strip())
 
 
+def _provider_keys(plural_name: str, singular_name: str) -> tuple[str, ...]:
+    return _csv(plural_name) or tuple(filter(None, (_value(singular_name),)))
+
+
 def _ids(name: str) -> frozenset[int]:
     try:
         values = frozenset(int(part) for part in _csv(name))
@@ -70,19 +74,44 @@ class Settings:
     allowed_user_ids: frozenset[int]
     access_mode: str
     openrouter_key: str
+    openrouter_keys: tuple[str, ...]
     openrouter_base_url: str
     default_model: str
     fallback_models: tuple[str, ...]
     provider_order: tuple[str, ...]
     openai_key: str
+    openai_keys: tuple[str, ...]
     openai_base_url: str
     openai_model: str
     anthropic_key: str
+    anthropic_keys: tuple[str, ...]
     anthropic_base_url: str
     anthropic_model: str
     gemini_key: str
+    gemini_keys: tuple[str, ...]
     gemini_base_url: str
     gemini_model: str
+    groq_key: str
+    groq_keys: tuple[str, ...]
+    groq_base_url: str
+    groq_model: str
+    together_key: str
+    together_keys: tuple[str, ...]
+    together_base_url: str
+    together_model: str
+    sambanova_key: str
+    sambanova_keys: tuple[str, ...]
+    sambanova_base_url: str
+    sambanova_model: str
+    cloudflare_key: str
+    cloudflare_keys: tuple[str, ...]
+    cloudflare_account_id: str
+    cloudflare_base_url: str
+    cloudflare_model: str
+    huggingface_key: str
+    huggingface_keys: tuple[str, ...]
+    huggingface_base_url: str
+    huggingface_model: str
     ollama_base_url: str
     ollama_model: str
     provider_request_reserve_usd: float
@@ -111,6 +140,8 @@ class Settings:
     max_audio_seconds: int
     cooldown_seconds: float
     user_daily_request_limit: int
+    user_monthly_request_limit: int
+    user_monthly_cost_limit_usd: float
     max_daily_cost_usd: float
     image_cost_reserve_usd: float
     tts_cost_reserve_usd: float
@@ -162,34 +193,90 @@ class Settings:
             raise ValueError("TELEGRAM_BOT_TOKEN is required")
         if not re.fullmatch(r"[0-9]+:[A-Za-z0-9_-]{20,}", token):
             raise ValueError("TELEGRAM_BOT_TOKEN has an invalid format")
-        api_key = _value("OPENROUTER_API_KEY")
-        openai_key = _value("OPENAI_API_KEY")
-        anthropic_key = _value("ANTHROPIC_API_KEY")
-        gemini_key = _value("GEMINI_API_KEY")
+        openrouter_keys = _provider_keys("OPENROUTER_API_KEYS", "OPENROUTER_API_KEY")
+        openai_keys = _provider_keys("OPENAI_API_KEYS", "OPENAI_API_KEY")
+        anthropic_keys = _provider_keys("ANTHROPIC_API_KEYS", "ANTHROPIC_API_KEY")
+        gemini_keys = _provider_keys("GEMINI_API_KEYS", "GEMINI_API_KEY")
+        groq_keys = _provider_keys("GROQ_API_KEYS", "GROQ_API_KEY")
+        together_keys = _provider_keys("TOGETHER_API_KEYS", "TOGETHER_API_KEY")
+        sambanova_keys = _provider_keys("SAMBANOVA_API_KEYS", "SAMBANOVA_API_KEY")
+        cloudflare_keys = _provider_keys("CLOUDFLARE_API_KEYS", "CLOUDFLARE_API_KEY")
+        huggingface_keys = _provider_keys("HUGGINGFACE_API_KEYS", "HUGGINGFACE_API_KEY")
+        api_key = openrouter_keys[0] if openrouter_keys else ""
+        openai_key = openai_keys[0] if openai_keys else ""
+        anthropic_key = anthropic_keys[0] if anthropic_keys else ""
+        gemini_key = gemini_keys[0] if gemini_keys else ""
+        groq_key = groq_keys[0] if groq_keys else ""
+        together_key = together_keys[0] if together_keys else ""
+        sambanova_key = sambanova_keys[0] if sambanova_keys else ""
+        cloudflare_key = cloudflare_keys[0] if cloudflare_keys else ""
+        huggingface_key = huggingface_keys[0] if huggingface_keys else ""
+        cloudflare_account_id = _value("CLOUDFLARE_ACCOUNT_ID")
         ollama_url = _value("OLLAMA_BASE_URL").rstrip("/")
-        for name, value in (("OPENROUTER_API_KEY", api_key), ("OPENAI_API_KEY", openai_key),
-                            ("ANTHROPIC_API_KEY", anthropic_key), ("GEMINI_API_KEY", gemini_key)):
+        for name, value in (
+            ("OPENROUTER_API_KEY", api_key), ("OPENAI_API_KEY", openai_key),
+            ("ANTHROPIC_API_KEY", anthropic_key), ("GEMINI_API_KEY", gemini_key),
+            ("GROQ_API_KEY", groq_key), ("TOGETHER_API_KEY", together_key),
+            ("SAMBANOVA_API_KEY", sambanova_key), ("CLOUDFLARE_API_KEY", cloudflare_key),
+            ("HUGGINGFACE_API_KEY", huggingface_key),
+        ):
             if value.startswith("replace-"):
                 raise ValueError(f"{name} must contain a real key or be left blank")
-        provider_order = tuple(
-            name for name in _csv("AI_PROVIDER_ORDER")
-            if name in {"openrouter", "openai", "anthropic", "gemini", "ollama"}
-        ) or ("openrouter", "openai", "anthropic", "gemini", "ollama")
+        for name, keys in (
+            ("OPENROUTER_API_KEYS", openrouter_keys),
+            ("OPENAI_API_KEYS", openai_keys),
+            ("ANTHROPIC_API_KEYS", anthropic_keys),
+            ("GEMINI_API_KEYS", gemini_keys),
+            ("GROQ_API_KEYS", groq_keys),
+            ("TOGETHER_API_KEYS", together_keys),
+            ("SAMBANOVA_API_KEYS", sambanova_keys),
+            ("CLOUDFLARE_API_KEYS", cloudflare_keys),
+            ("HUGGINGFACE_API_KEYS", huggingface_keys),
+        ):
+            if any(key.startswith("replace-") for key in keys):
+                raise ValueError(f"{name} must contain real keys or be left blank")
+        provider_order = ("openrouter", "groq", "gemini", "cloudflare", "huggingface")
+        cloudflare_base_url = _value("CLOUDFLARE_BASE_URL").rstrip("/")
+        if not cloudflare_base_url and cloudflare_account_id:
+            cloudflare_base_url = (
+                "https://api.cloudflare.com/client/v4/accounts/"
+                f"{cloudflare_account_id}/ai/v1"
+            )
+        if cloudflare_key and not cloudflare_account_id:
+            raise ValueError(
+                "CLOUDFLARE_ACCOUNT_ID is required when CLOUDFLARE_API_KEY is configured",
+            )
+        if cloudflare_key and not _value("CLOUDFLARE_MODEL"):
+            raise ValueError(
+                "CLOUDFLARE_MODEL is required when CLOUDFLARE_API_KEY is configured",
+            )
+        if cloudflare_account_id and not re.fullmatch(r"[A-Fa-f0-9]{32}", cloudflare_account_id):
+            raise ValueError(
+                "CLOUDFLARE_ACCOUNT_ID must be a 32-character hexadecimal ID",
+            )
+        huggingface_base_url = _value(
+            "HUGGINGFACE_BASE_URL", "https://router.huggingface.co/v1",
+        ).rstrip("/")
         provider_models = {
             "openrouter": bool(api_key),
-            "openai": bool(openai_key and _value("OPENAI_MODEL")),
-            "anthropic": bool(anthropic_key and _value("ANTHROPIC_MODEL")),
             "gemini": bool(gemini_key and _value("GEMINI_MODEL")),
+            "groq": bool(groq_key and _value("GROQ_MODEL")),
+            "cloudflare": bool(
+                cloudflare_key and cloudflare_account_id and cloudflare_base_url
+                and _value("CLOUDFLARE_MODEL")
+            ),
+            "huggingface": bool(huggingface_key and _value("HUGGINGFACE_MODEL")),
             "ollama": bool(ollama_url and _value("OLLAMA_MODEL")),
         }
         if not any(provider_models.values()):
             raise ValueError("Configure at least one provider key/endpoint and its model ID")
-        if openai_key and not _value("OPENAI_MODEL"):
-            raise ValueError("OPENAI_MODEL is required when OPENAI_API_KEY is configured")
-        if anthropic_key and not _value("ANTHROPIC_MODEL"):
-            raise ValueError("ANTHROPIC_MODEL is required when ANTHROPIC_API_KEY is configured")
         if gemini_key and not _value("GEMINI_MODEL"):
             raise ValueError("GEMINI_MODEL is required when GEMINI_API_KEY is configured")
+        for key, model, provider in ((groq_key, "GROQ_MODEL", "GROQ_API_KEY"),):
+            if key and not _value(model):
+                raise ValueError(f"{model} is required when {provider} is configured")
+        if huggingface_key and not _value("HUGGINGFACE_MODEL"):
+            raise ValueError("HUGGINGFACE_MODEL is required when HUGGINGFACE_API_KEY is configured")
         if ollama_url and not _value("OLLAMA_MODEL"):
             raise ValueError("OLLAMA_MODEL is required when OLLAMA_BASE_URL is configured")
         try:
@@ -219,19 +306,50 @@ class Settings:
             allowed_user_ids=_ids("ALLOWED_USER_IDS"),
             access_mode=access_mode,
             openrouter_key=api_key,
+            openrouter_keys=openrouter_keys,
             openrouter_base_url=_value("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/"),
             default_model=_value("DEFAULT_AI_MODEL", "openrouter/free"),
             fallback_models=_csv("FALLBACK_MODELS"),
             provider_order=provider_order,
             openai_key=openai_key,
+            openai_keys=openai_keys,
             openai_base_url=_value("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
             openai_model=_value("OPENAI_MODEL"),
             anthropic_key=anthropic_key,
+            anthropic_keys=anthropic_keys,
             anthropic_base_url=_value("ANTHROPIC_BASE_URL", "https://api.anthropic.com").rstrip("/"),
             anthropic_model=_value("ANTHROPIC_MODEL"),
             gemini_key=gemini_key,
+            gemini_keys=gemini_keys,
             gemini_base_url=_value("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta").rstrip("/"),
             gemini_model=_value("GEMINI_MODEL"),
+            groq_key=groq_key,
+            groq_keys=groq_keys,
+            groq_base_url=_value(
+                "GROQ_BASE_URL", "https://api.groq.com/openai/v1",
+            ).rstrip("/"),
+            groq_model=_value("GROQ_MODEL"),
+            together_key=together_key,
+            together_keys=together_keys,
+            together_base_url=_value(
+                "TOGETHER_BASE_URL", "https://api.together.xyz/v1",
+            ).rstrip("/"),
+            together_model=_value("TOGETHER_MODEL"),
+            sambanova_key=sambanova_key,
+            sambanova_keys=sambanova_keys,
+            sambanova_base_url=_value(
+                "SAMBANOVA_BASE_URL", "https://api.sambanova.ai/v1",
+            ).rstrip("/"),
+            sambanova_model=_value("SAMBANOVA_MODEL"),
+            cloudflare_key=cloudflare_key,
+            cloudflare_keys=cloudflare_keys,
+            cloudflare_account_id=cloudflare_account_id,
+            cloudflare_base_url=cloudflare_base_url,
+            cloudflare_model=_value("CLOUDFLARE_MODEL"),
+            huggingface_key=huggingface_key,
+            huggingface_keys=huggingface_keys,
+            huggingface_base_url=huggingface_base_url,
+            huggingface_model=_value("HUGGINGFACE_MODEL"),
             ollama_base_url=ollama_url,
             ollama_model=_value("OLLAMA_MODEL"),
             provider_request_reserve_usd=_float("PROVIDER_REQUEST_RESERVE_USD", 0.10, 0),
@@ -260,6 +378,8 @@ class Settings:
             max_audio_seconds=_int("MAX_AUDIO_SECONDS", 600, 1, 3600),
             cooldown_seconds=_float("REQUEST_COOLDOWN_SECONDS", 1.5, 0),
             user_daily_request_limit=_int("USER_DAILY_REQUEST_LIMIT", 40, 1, 10000),
+            user_monthly_request_limit=_int("USER_MONTHLY_REQUEST_LIMIT", 1200, 1, 100_000),
+            user_monthly_cost_limit_usd=_float("USER_MONTHLY_COST_LIMIT_USD", 50.0, 0),
             max_daily_cost_usd=_float("MAX_DAILY_COST_USD", 5.0, 0),
             image_cost_reserve_usd=_float("IMAGE_COST_RESERVE_USD", 0.10, 0),
             tts_cost_reserve_usd=_float("TTS_COST_RESERVE_USD", 0.03, 0),
@@ -335,22 +455,49 @@ class Settings:
             ("OPENAI_API_KEY", settings.openai_key),
             ("ANTHROPIC_API_KEY", settings.anthropic_key),
             ("GEMINI_API_KEY", settings.gemini_key),
+            ("GROQ_API_KEY", settings.groq_key),
+            ("TOGETHER_API_KEY", settings.together_key),
+            ("SAMBANOVA_API_KEY", settings.sambanova_key),
+            ("CLOUDFLARE_API_KEY", settings.cloudflare_key),
+            ("HUGGINGFACE_API_KEY", settings.huggingface_key),
             ("HA_TOKEN", settings.ha_token),
             ("APP_DATA_KEY", settings.app_data_key),
             ("DASHBOARD_AUTH_TOKEN", settings.dashboard_auth_token),
         ):
             if any(char in value for char in "\r\n"):
                 raise ValueError(f"{name} must be a single-line value")
+        for name, keys in (
+            ("OPENROUTER_API_KEYS", settings.openrouter_keys),
+            ("OPENAI_API_KEYS", settings.openai_keys),
+            ("ANTHROPIC_API_KEYS", settings.anthropic_keys),
+            ("GEMINI_API_KEYS", settings.gemini_keys),
+            ("GROQ_API_KEYS", settings.groq_keys),
+            ("TOGETHER_API_KEYS", settings.together_keys),
+            ("SAMBANOVA_API_KEYS", settings.sambanova_keys),
+            ("CLOUDFLARE_API_KEYS", settings.cloudflare_keys),
+            ("HUGGINGFACE_API_KEYS", settings.huggingface_keys),
+        ):
+            if any(any(char in key for char in "\r\n") for key in keys):
+                raise ValueError(f"{name} must contain only single-line values")
         for name, value in (
             ("OPENROUTER_BASE_URL", settings.openrouter_base_url),
             ("OPENAI_BASE_URL", settings.openai_base_url),
             ("ANTHROPIC_BASE_URL", settings.anthropic_base_url),
             ("GEMINI_BASE_URL", settings.gemini_base_url),
+            ("GROQ_BASE_URL", settings.groq_base_url),
+            ("HUGGINGFACE_BASE_URL", settings.huggingface_base_url),
         ):
             parsed = urlsplit(value)
             if (parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password
                     or parsed.query or parsed.fragment):
                 raise ValueError(f"{name} must be a valid HTTPS URL")
+        if settings.cloudflare_base_url:
+            parsed = urlsplit(settings.cloudflare_base_url)
+            if (
+                parsed.scheme != "https" or not parsed.hostname or parsed.username
+                or parsed.password or parsed.query or parsed.fragment
+            ):
+                raise ValueError("CLOUDFLARE_BASE_URL must be a valid HTTPS URL")
         if settings.ollama_base_url:
             local_url = urlsplit(settings.ollama_base_url)
             if (not local_url.hostname or local_url.scheme not in {"http", "https"} or local_url.username

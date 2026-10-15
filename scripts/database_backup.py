@@ -1,4 +1,4 @@
-"""Create or restore a consistent SQLite backup without exporting user content."""
+"""Create encrypted SQLite backups and restore verified snapshots."""
 
 from __future__ import annotations
 
@@ -15,11 +15,18 @@ from pathlib import Path
 
 from dotenv import dotenv_values
 
+from enan_ultra.crypto import DataCipher
+
 
 def configured_database() -> Path:
-    values = dotenv_values()
+    values = _environment_values()
     configured = os.environ.get("DATABASE_PATH") or str(values.get("DATABASE_PATH") or "data/telegram_ai.sqlite3")
     return Path(configured)
+
+
+def _environment_values() -> dict[str, str | None]:
+    configured_file = Path("/etc/telegram-ai/bot.env")
+    return dotenv_values(configured_file if configured_file.is_file() else None)
 
 
 def _copy_database(source: Path, destination: Path, *, replace: bool) -> None:
@@ -31,6 +38,7 @@ def _copy_database(source: Path, destination: Path, *, replace: bool) -> None:
     destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     if os.name != "nt":
         destination.parent.chmod(0o700)
+    existing_stat = destination.stat() if destination.exists() else None
     with tempfile.NamedTemporaryFile(prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent, delete=False) as handle:
         temporary = Path(handle.name)
     if os.name != "nt":
@@ -49,6 +57,9 @@ def _copy_database(source: Path, destination: Path, *, replace: bool) -> None:
         source_db = None
         if os.name != "nt":
             temporary.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            if existing_stat:
+                os.chown(temporary, existing_stat.st_uid, existing_stat.st_gid)
+                temporary.chmod(stat.S_IMODE(existing_stat.st_mode))
         os.replace(temporary, destination)
     finally:
         if target_db:
@@ -73,6 +84,64 @@ def _service_is_active() -> bool:
         return False
 
 
+def _backup_cipher() -> DataCipher:
+    values = _environment_values()
+    key = os.environ.get("APP_DATA_KEY") or str(values.get("APP_DATA_KEY") or "")
+    if len(key) < 32 or key.startswith("replace-"):
+        raise ValueError("APP_DATA_KEY is required to encrypt or decrypt database backups")
+    return DataCipher(key)
+
+
+def _encrypted_backup(database: Path, destination: Path, cipher: DataCipher) -> None:
+    if database.resolve() == destination.resolve():
+        raise ValueError("Backup destination must differ from the live database")
+    database_stat = database.stat()
+    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if os.name != "nt":
+        destination.parent.chmod(0o700)
+        os.chown(destination.parent, database_stat.st_uid, database_stat.st_gid)
+    with tempfile.TemporaryDirectory(prefix="telegram-ai-backup-", dir=destination.parent) as directory:
+        plain = Path(directory) / "snapshot.sqlite3"
+        _copy_database(database, plain, replace=False)
+        payload = cipher.encrypt(plain.read_bytes())
+        with tempfile.NamedTemporaryFile(
+            prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent, delete=False,
+        ) as handle:
+            encrypted = Path(handle.name)
+            if os.name != "nt":
+                encrypted.chmod(stat.S_IRUSR | stat.S_IWUSR)
+                os.chown(encrypted, database_stat.st_uid, database_stat.st_gid)
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.replace(encrypted, destination)
+        finally:
+            encrypted.unlink(missing_ok=True)
+
+
+def _decrypted_snapshot(source: Path, cipher: DataCipher) -> Path:
+    payload = source.read_bytes()
+    try:
+        plaintext = cipher.decrypt(payload)
+    except ValueError as exc:
+        raise ValueError("Backup decryption failed; verify APP_DATA_KEY and backup integrity") from exc
+    if not plaintext.startswith(b"SQLite format 3\x00"):
+        raise ValueError("Decrypted backup is not a SQLite database")
+    handle = tempfile.NamedTemporaryFile(prefix="telegram-ai-restore-", suffix=".sqlite3", delete=False)
+    path = Path(handle.name)
+    try:
+        if os.name != "nt":
+            path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        handle.write(plaintext)
+        handle.close()
+        return path
+    except Exception:
+        handle.close()
+        path.unlink(missing_ok=True)
+        raise
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -82,27 +151,54 @@ def main() -> int:
     restore.add_argument("source", type=Path)
     restore.add_argument("--to", type=Path, required=True)
     restore.add_argument("--replace", action="store_true", help="preserve the current DB, then replace it")
+    restore.add_argument(
+        "--allow-unencrypted", action="store_true",
+        help="explicitly allow restoring a legacy plaintext SQLite backup",
+    )
     args = parser.parse_args()
     try:
         database = configured_database()
         if args.command == "backup":
-            _copy_database(database, args.destination, replace=True)
-            print(f"Database backup created: {args.destination}")
-            print("Keep the matching APP_DATA_KEY in a separate secure backup.")
+            _encrypted_backup(database, args.destination, _backup_cipher())
+            print(f"Encrypted database backup created: {args.destination}")
             return 0
-        if args.to.resolve() == database.resolve() and _service_is_active():
-            raise RuntimeError("Stop telegram-ai.service before restoring its live database")
-        if args.to.exists() and not args.replace:
-            raise FileExistsError("Destination exists; pass --replace to preserve it and restore")
-        if args.to.exists():
-            stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-            preserved = args.to.with_name(f"{args.to.name}.pre-restore-{stamp}")
-            _copy_database(args.to, preserved, replace=False)
-        if args.to.resolve() == database.resolve():
-            Path(f"{args.to}-wal").unlink(missing_ok=True)
-            Path(f"{args.to}-shm").unlink(missing_ok=True)
-        _copy_database(args.source, args.to, replace=args.replace)
-        print(f"Database restored to {args.to}; use the same APP_DATA_KEY to decrypt Personal KB data.")
+        source = args.source.resolve()
+        destination = args.to.resolve()
+        if source == destination:
+            raise ValueError("Restore source and destination must differ")
+        temporary: Path | None = None
+        with source.open("rb") as handle:
+            prefix = handle.read(16)
+        if prefix.startswith(b"SQLite format 3\x00"):
+            if not args.allow_unencrypted:
+                raise ValueError("Plaintext backup refused; pass --allow-unencrypted only for a trusted legacy backup")
+        else:
+            temporary = _decrypted_snapshot(source, _backup_cipher())
+            source = temporary
+        try:
+            probe = sqlite3.connect(source)
+            try:
+                integrity = probe.execute("PRAGMA integrity_check").fetchone()
+                if not integrity or integrity[0] != "ok":
+                    raise RuntimeError("Restore source failed SQLite integrity_check")
+            finally:
+                probe.close()
+            if destination == database.resolve() and _service_is_active():
+                raise RuntimeError("Stop telegram-ai.service before restoring its live database")
+            if destination.exists() and not args.replace:
+                raise FileExistsError("Destination exists; pass --replace to preserve it and restore")
+            if destination.exists():
+                stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+                preserved = destination.with_name(f"{destination.name}.pre-restore-{stamp}")
+                _copy_database(destination, preserved, replace=False)
+            if destination == database.resolve():
+                Path(f"{destination}-wal").unlink(missing_ok=True)
+                Path(f"{destination}-shm").unlink(missing_ok=True)
+            _copy_database(source, args.to, replace=args.replace)
+        finally:
+            if temporary:
+                temporary.unlink(missing_ok=True)
+        print(f"Database restored to {args.to}; APP_DATA_KEY must remain unchanged.")
         return 0
     except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
         print(f"Database backup/restore failed: {exc}", file=sys.stderr)

@@ -14,6 +14,7 @@ import httpx
 from enan_ultra.config import Settings
 from enan_ultra.models import AssistantResult
 from enan_ultra.services.openrouter import OpenRouter, ProviderError
+from enan_ultra.services.key_rotation import KeyRotation
 
 logger = logging.getLogger(__name__)
 TokenCallback = Callable[[str], Awaitable[None]]
@@ -40,8 +41,13 @@ class ProviderAdapter(Protocol):
 class _HttpAdapter:
     name = ""
 
-    def __init__(self, settings: Settings, base_url: str, headers: dict[str, str]) -> None:
+    def __init__(
+        self, settings: Settings, base_url: str, headers: dict[str, str],
+        keys: tuple[str, ...] = (), key_header: str | None = None,
+    ) -> None:
         self.settings = settings
+        self.key_rotation = KeyRotation(self.name, keys)
+        self.key_header = key_header
         self.client = httpx.AsyncClient(
             base_url=base_url,
             headers={"Content-Type": "application/json", **headers},
@@ -50,6 +56,44 @@ class _HttpAdapter:
             limits=httpx.Limits(max_connections=20, max_keepalive_connections=5),
         )
         self.last_health: tuple[float, dict[str, Any]] = (0.0, {"status": "unknown"})
+
+    async def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+        original_headers = dict(kwargs.pop("headers", {}) or {})
+
+        async def request(key: str | None, _key_index: int) -> httpx.Response:
+            headers = dict(original_headers)
+            if key and self.key_header:
+                headers[self.key_header] = self._credential_header_value(key)
+            response = await self.client.request(method, url, headers=headers, **kwargs)
+            if response.status_code in KeyRotation.RETRYABLE_STATUS_CODES:
+                raise ProviderError(
+                    f"{self.name} request failed ({response.status_code})", response.status_code,
+                )
+            return response
+
+        return await self.key_rotation.run(request)
+
+    async def _stream_request(
+        self, method: str, url: str, consume: Callable[[httpx.Response], Awaitable[Any]],
+        **kwargs: Any,
+    ) -> Any:
+        original_headers = dict(kwargs.pop("headers", {}) or {})
+
+        async def request(key: str | None, _key_index: int) -> Any:
+            headers = dict(original_headers)
+            if key and self.key_header:
+                headers[self.key_header] = self._credential_header_value(key)
+            async with self.client.stream(method, url, headers=headers, **kwargs) as response:
+                if response.status_code in KeyRotation.RETRYABLE_STATUS_CODES:
+                    raise ProviderError(
+                        f"{self.name} request failed ({response.status_code})", response.status_code,
+                    )
+                return await consume(response)
+
+        return await self.key_rotation.run(request)
+
+    def _credential_header_value(self, key: str) -> str:
+        return f"Bearer {key}" if self.key_header == "Authorization" else key
 
     async def close(self) -> None:
         await self.client.aclose()
@@ -99,19 +143,26 @@ class _HttpAdapter:
 
 
 class OpenAICompatibleAdapter(_HttpAdapter):
-    """OpenAI API and compatible Ollama endpoint adapter."""
+    """OpenAI-compatible provider endpoint adapter."""
 
-    def __init__(self, settings: Settings, name: str, base_url: str, key: str, model: str) -> None:
+    def __init__(
+        self, settings: Settings, name: str, base_url: str, key: str, model: str,
+        *, keys: tuple[str, ...] | None = None,
+    ) -> None:
         headers = {"Authorization": f"Bearer {key or 'ollama'}"}
         super().__init__(settings, base_url, headers)
         self.name = name
+        self.client.headers.pop("Authorization", None)
+        configured_keys = keys if keys is not None else getattr(settings, f"{name}_keys", ())
+        self.key_rotation = KeyRotation(name, configured_keys or ((key,) if key else ()))
+        self.key_header = "Authorization" if name != "ollama" else None
         self._model = model
 
     def configured_model(self) -> str:
         return self._model
 
     async def list_models(self) -> list[str]:
-        response = await self.client.get("/models")
+        response = await self._request("GET", "/models")
         response.raise_for_status()
         payload = response.json()
         return [str(item.get("id")) for item in payload.get("data", []) if item.get("id")]
@@ -129,10 +180,10 @@ class OpenAICompatibleAdapter(_HttpAdapter):
             payload["stream"] = True
             if self.name == "openai":
                 payload["stream_options"] = {"include_usage": True}
-            pieces: list[str] = []
-            usage: dict[str, Any] = {}
-            async with self.client.stream("POST", "/chat/completions", json=payload) as response:
+            async def consume(response: httpx.Response) -> AssistantResult:
                 self._check(response)
+                pieces: list[str] = []
+                usage: dict[str, Any] = {}
                 async for line in response.aiter_lines():
                     if not line.startswith("data:"):
                         continue
@@ -152,11 +203,13 @@ class OpenAICompatibleAdapter(_HttpAdapter):
                     if isinstance(token, str) and token:
                         pieces.append(token)
                         await on_token(token)
-            text = "".join(pieces).strip()
-            if not text:
-                raise ProviderError(f"{self.name} returned an empty stream")
-            return AssistantResult(text=text, model=f"{self.name}::{model}", usage=usage)
-        response = await self.client.post("/chat/completions", json=payload)
+                text = "".join(pieces).strip()
+                if not text:
+                    raise ProviderError(f"{self.name} returned an empty stream")
+                return AssistantResult(text=text, model=f"{self.name}::{model}", usage=usage)
+
+            return await self._stream_request("POST", "/chat/completions", consume, json=payload)
+        response = await self._request("POST", "/chat/completions", json=payload)
         self._check(response)
         body = response.json()
         choices = body.get("choices") or []
@@ -176,9 +229,9 @@ class OpenAICompatibleAdapter(_HttpAdapter):
 
     def _check(self, response: httpx.Response) -> None:
         if response.status_code in {401, 402, 403}:
-            raise ProviderError(f"{self.name} request rejected ({response.status_code})")
+            raise ProviderError(f"{self.name} request rejected ({response.status_code})", response.status_code)
         if response.status_code >= 400:
-            raise ProviderError(f"{self.name} request failed ({response.status_code})")
+            raise ProviderError(f"{self.name} request failed ({response.status_code})", response.status_code)
 
 
 class AnthropicAdapter(_HttpAdapter):
@@ -187,14 +240,16 @@ class AnthropicAdapter(_HttpAdapter):
 
     def __init__(self, settings: Settings) -> None:
         super().__init__(settings, settings.anthropic_base_url, {
-            "x-api-key": settings.anthropic_key, "anthropic-version": self._api_version,
+            "anthropic-version": self._api_version,
         })
+        self.key_rotation = KeyRotation("anthropic", settings.anthropic_keys)
+        self.key_header = "x-api-key"
 
     def configured_model(self) -> str:
         return self.settings.anthropic_model
 
     async def list_models(self) -> list[str]:
-        response = await self.client.get("/v1/models", params={"limit": 100})
+        response = await self._request("GET", "/v1/models", params={"limit": 100})
         self._check(response)
         return [str(item.get("id")) for item in response.json().get("data", []) if item.get("id")]
 
@@ -239,7 +294,7 @@ class AnthropicAdapter(_HttpAdapter):
                 "name": tool["function"]["name"], "description": tool["function"].get("description", ""),
                 "input_schema": tool["function"].get("parameters", {"type": "object", "properties": {}}),
             } for tool in tools if tool.get("type") == "function"]
-        response = await self.client.post("/v1/messages", json=request)
+        response = await self._request("POST", "/v1/messages", json=request)
         self._check(response)
         body = response.json()
         text_parts: list[str] = []
@@ -287,22 +342,24 @@ class AnthropicAdapter(_HttpAdapter):
     @staticmethod
     def _check(response: httpx.Response) -> None:
         if response.status_code in {401, 402, 403}:
-            raise ProviderError(f"Anthropic request rejected ({response.status_code})")
+            raise ProviderError(f"Anthropic request rejected ({response.status_code})", response.status_code)
         if response.status_code >= 400:
-            raise ProviderError(f"Anthropic request failed ({response.status_code})")
+            raise ProviderError(f"Anthropic request failed ({response.status_code})", response.status_code)
 
 
 class GeminiAdapter(_HttpAdapter):
     name = "gemini"
 
     def __init__(self, settings: Settings) -> None:
-        super().__init__(settings, settings.gemini_base_url, {"x-goog-api-key": settings.gemini_key})
+        super().__init__(settings, settings.gemini_base_url, {})
+        self.key_rotation = KeyRotation("gemini", settings.gemini_keys)
+        self.key_header = "x-goog-api-key"
 
     def configured_model(self) -> str:
         return self.settings.gemini_model
 
     async def list_models(self) -> list[str]:
-        response = await self.client.get("/models")
+        response = await self._request("GET", "/models")
         self._check(response)
         models = response.json().get("models", [])
         return [str(item.get("name", "")).removeprefix("models/") for item in models
@@ -359,7 +416,7 @@ class GeminiAdapter(_HttpAdapter):
                 "name": tool["function"]["name"], "description": tool["function"].get("description", ""),
                 "parameters": tool["function"].get("parameters", {"type": "object", "properties": {}}),
             } for tool in tools if tool.get("type") == "function"]}]
-        response = await self.client.post(f"/models/{model}:generateContent", json=request)
+        response = await self._request("POST", f"/models/{model}:generateContent", json=request)
         self._check(response)
         body = response.json()
         candidate = (body.get("candidates") or [{}])[0]
@@ -389,9 +446,9 @@ class GeminiAdapter(_HttpAdapter):
     @staticmethod
     def _check(response: httpx.Response) -> None:
         if response.status_code in {401, 402, 403}:
-            raise ProviderError(f"Gemini request rejected ({response.status_code})")
+            raise ProviderError(f"Gemini request rejected ({response.status_code})", response.status_code)
         if response.status_code >= 400:
-            raise ProviderError(f"Gemini request failed ({response.status_code})")
+            raise ProviderError(f"Gemini request failed ({response.status_code})", response.status_code)
 
 
 class ProviderRouter:
@@ -401,16 +458,29 @@ class ProviderRouter:
         self.settings = settings
         self.openrouter = openrouter
         self.adapters: dict[str, ProviderAdapter] = {}
-        if settings.openrouter_key and openrouter:
+        if settings.openrouter_keys and openrouter:
             self.adapters["openrouter"] = _OpenRouterAdapter(openrouter, settings)
-        if settings.openai_key:
-            self.adapters["openai"] = OpenAICompatibleAdapter(
-                settings, "openai", settings.openai_base_url, settings.openai_key, settings.openai_model,
-            )
-        if settings.anthropic_key:
-            self.adapters["anthropic"] = AnthropicAdapter(settings)
-        if settings.gemini_key:
+        if settings.gemini_keys:
             self.adapters["gemini"] = GeminiAdapter(settings)
+        for name in ("groq",):
+            keys = getattr(settings, f"{name}_keys")
+            if keys:
+                self.adapters[name] = OpenAICompatibleAdapter(
+                    settings, name, getattr(settings, f"{name}_base_url"),
+                    getattr(settings, f"{name}_key"), getattr(settings, f"{name}_model"),
+                    keys=keys,
+                )
+        if settings.cloudflare_keys:
+            self.adapters["cloudflare"] = OpenAICompatibleAdapter(
+                settings, "cloudflare", settings.cloudflare_base_url, settings.cloudflare_key,
+                settings.cloudflare_model, keys=settings.cloudflare_keys,
+            )
+        if settings.huggingface_keys:
+            self.adapters["huggingface"] = OpenAICompatibleAdapter(
+                settings, "huggingface", settings.huggingface_base_url,
+                settings.huggingface_key, settings.huggingface_model,
+                keys=settings.huggingface_keys,
+            )
         if settings.ollama_base_url:
             self.adapters["ollama"] = OpenAICompatibleAdapter(
                 settings, "ollama", settings.ollama_base_url, "", settings.ollama_model,
@@ -446,7 +516,13 @@ class ProviderRouter:
         candidates: list[str] = [primary, *self.settings.fallback_models]
         if primary == "auto" or not primary:
             candidates = []
+        if local_only:
+            local = self.adapters.get("ollama")
+            if local and local.configured_model():
+                candidates.append(self._label("ollama", local.configured_model()))
         for provider in self.settings.provider_order:
+            if local_only:
+                break
             adapter = self.adapters.get(provider)
             if adapter and adapter.configured_model():
                 candidates.append(self._label(provider, adapter.configured_model()))

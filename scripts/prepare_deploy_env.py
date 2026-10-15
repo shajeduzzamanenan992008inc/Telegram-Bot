@@ -22,6 +22,14 @@ def read_values(path: Path) -> dict[str, str]:
     return values
 
 
+def provider_keys(values: dict[str, str], plural_name: str, singular_name: str) -> tuple[str, ...]:
+    keys = tuple(part.strip() for part in values.get(plural_name, "").split(",") if part.strip())
+    if keys:
+        return keys
+    singular = values.get(singular_name, "").strip()
+    return (singular,) if singular else ()
+
+
 def main() -> int:
     path = Path(sys.argv[1])
     text = path.read_text(encoding="utf-8")
@@ -62,14 +70,29 @@ def main() -> int:
             missing.append("valid numeric ADMIN_USER_IDS")
     if values.get("ACCESS_MODE", "public").lower() == "allowlist" and not values.get("ALLOWED_USER_IDS"):
         missing.append("ALLOWED_USER_IDS for ACCESS_MODE=allowlist")
-    for key, model in (("OPENAI_API_KEY", "OPENAI_MODEL"), ("ANTHROPIC_API_KEY", "ANTHROPIC_MODEL"),
-                       ("GEMINI_API_KEY", "GEMINI_MODEL"), ("OLLAMA_BASE_URL", "OLLAMA_MODEL")):
-        if values.get(key) and not values.get(model):
+    provider_settings = (
+        ("OPENAI_API_KEYS", "OPENAI_API_KEY", "OPENAI_MODEL"),
+        ("ANTHROPIC_API_KEYS", "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL"),
+        ("GEMINI_API_KEYS", "GEMINI_API_KEY", "GEMINI_MODEL"),
+    )
+    keyed_providers = (
+        ("OPENROUTER_API_KEYS", "OPENROUTER_API_KEY", ""),
+        *provider_settings,
+    )
+    for plural, singular, model in keyed_providers:
+        keys = provider_keys(values, plural, singular)
+        if any(key.startswith("replace-") for key in keys):
+            missing.append(plural)
+        if keys and model and not values.get(model):
             missing.append(model)
-    configured_provider = bool(values.get("OPENROUTER_API_KEY") and not values["OPENROUTER_API_KEY"].startswith("replace-")) or any(
-        values.get(key) and not values[key].startswith("replace-") and values.get(model)
-        for key, model in (("OPENAI_API_KEY", "OPENAI_MODEL"), ("ANTHROPIC_API_KEY", "ANTHROPIC_MODEL"),
-                           ("GEMINI_API_KEY", "GEMINI_MODEL"), ("OLLAMA_BASE_URL", "OLLAMA_MODEL"))
+    configured_provider = False
+    for plural, singular, model in keyed_providers:
+        keys = provider_keys(values, plural, singular)
+        if keys and all(not key.startswith("replace-") for key in keys) and (not model or values.get(model)):
+            configured_provider = True
+            break
+    configured_provider = configured_provider or bool(
+        values.get("OLLAMA_BASE_URL") and values.get("OLLAMA_MODEL")
     )
     if not configured_provider:
         missing.append("at least one provider key/endpoint with its model ID")

@@ -122,7 +122,7 @@ class ActionRegistry:
                 report = await self.sandbox.run_python_tests(base64.b64decode(payload["archive_b64"], validate=True))
                 state = "approved" if report.exit_code == 0 and not report.timed_out else "failed"
                 await context.db.finish_approval(approval_id, state, f"sandbox exit={report.exit_code}; timeout={report.timed_out}")
-                output = report.output.strip() or "pytest কোনো output দেয়নি।"
+                output = report.output.strip() or "pytest produced no output."
                 return ActionResult(report.exit_code == 0 and not report.timed_out,
                                     f"Sandbox result (exit {report.exit_code}{', timeout' if report.timed_out else ''}):\n{output[-3000:]}")
             raise ValueError("Unknown approval action")
@@ -182,15 +182,16 @@ class ActionRegistry:
         event_id, reason = await context.db.reserve_usage(
             user.id, context.settings.image_model or "image", reserve,
             context.settings.user_daily_request_limit, context.settings.max_daily_cost_usd,
+            context.settings.user_monthly_request_limit, context.settings.user_monthly_cost_limit_usd,
         )
         if event_id is None:
-            return ActionResult(False, f"Daily {reason or 'usage'} limit blocks image generation")
+            return ActionResult(False, f"{reason or 'usage'} limit blocks image generation")
         try:
             data, _ = await context.router.generate_image(prompt.strip())
             if not data or len(data) > context.settings.max_image_bytes:
                 raise ValueError("Generated image exceeds configured limit")
             msg = context.update.effective_message
-            await msg.reply_photo(InputFile(io.BytesIO(data), filename="generated-image.jpg"), caption="আপনার তৈরি করা ছবি 🎨")
+            await msg.reply_photo(InputFile(io.BytesIO(data), filename="generated-image.jpg"), caption="Your generated image 🎨")
             await context.db.finish_usage(event_id, context.settings.image_model or "image", {})
             return ActionResult(True, "Generated image sent")
         except Exception as exc:

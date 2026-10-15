@@ -8,7 +8,8 @@ import math
 import os
 import sqlite3
 import stat
-from datetime import UTC, datetime, timedelta
+import tempfile
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 import uuid
@@ -96,6 +97,36 @@ class Database:
                 target.close()
             temporary.unlink(missing_ok=True)
 
+    async def backup_encrypted_to(self, destination: Path) -> None:
+        if self.cipher is None:
+            raise RuntimeError("APP_DATA_KEY is required for encrypted backups")
+        destination = Path(destination)
+        if destination.resolve() == self.path.resolve():
+            raise ValueError("Backup destination must differ from the live database")
+        destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if os.name != "nt":
+            destination.parent.chmod(0o700)
+        with tempfile.NamedTemporaryFile(
+            prefix=".unencrypted-backup-", suffix=".sqlite3", dir=destination.parent, delete=False,
+        ) as handle:
+            plaintext = Path(handle.name)
+        encrypted = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            if os.name != "nt":
+                plaintext.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            await self.backup_to(plaintext)
+            payload = self.cipher.encrypt(plaintext.read_bytes())
+            with encrypted.open("xb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if os.name != "nt":
+                encrypted.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            encrypted.replace(destination)
+        finally:
+            plaintext.unlink(missing_ok=True)
+            encrypted.unlink(missing_ok=True)
+
     def _db(self) -> aiosqlite.Connection:
         if self.connection is None:
             raise RuntimeError("Database is not open")
@@ -169,6 +200,9 @@ class Database:
                 reminder_text TEXT NOT NULL,
                 run_at TEXT NOT NULL,
                 delivered INTEGER NOT NULL DEFAULT 0 CHECK(delivered IN (0,1)),
+                paused INTEGER NOT NULL DEFAULT 0 CHECK(paused IN (0,1)),
+                attempts INTEGER NOT NULL DEFAULT 0,
+                claimed_until TEXT,
                 created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(delivered, run_at);
@@ -280,6 +314,90 @@ class Database:
             "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(3, ?)",
             (utc_now().isoformat(),),
         )
+        cursor = await db.execute("PRAGMA table_info(reminders)")
+        reminder_columns = {str(row["name"]) for row in await cursor.fetchall()}
+        await cursor.close()
+        if "repeat_seconds" not in reminder_columns:
+            await db.execute("ALTER TABLE reminders ADD COLUMN repeat_seconds INTEGER")
+        for column, definition in (
+            ("paused", "INTEGER NOT NULL DEFAULT 0"),
+            ("attempts", "INTEGER NOT NULL DEFAULT 0"),
+            ("claimed_until", "TEXT"),
+        ):
+            if column not in reminder_columns:
+                await db.execute(f"ALTER TABLE reminders ADD COLUMN {column} {definition}")
+        await db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS blocked_users (
+                user_id INTEGER PRIMARY KEY,
+                reason TEXT NOT NULL DEFAULT '',
+                blocked_by INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            """
+        )
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(4, ?)",
+            (utc_now().isoformat(),),
+        )
+        await db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS user_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                task_text TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','done')),
+                priority TEXT NOT NULL DEFAULT 'normal'
+                    CHECK(priority IN ('low','normal','high','urgent')),
+                due_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_user_tasks_open
+                ON user_tasks(user_id,status,id DESC);
+            """
+        )
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(5, ?)",
+            (utc_now().isoformat(),),
+        )
+        await db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS study_cards (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                question TEXT NOT NULL,
+                answer TEXT NOT NULL,
+                interval_days INTEGER NOT NULL DEFAULT 0,
+                due_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                reviewed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_study_cards_due
+                ON study_cards(user_id,due_at,id);
+            """
+        )
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(6, ?)",
+            (utc_now().isoformat(),),
+        )
+        cursor = await db.execute("PRAGMA table_info(user_tasks)")
+        task_columns = {str(row["name"]) for row in await cursor.fetchall()}
+        await cursor.close()
+        if "priority" not in task_columns:
+            await db.execute(
+                "ALTER TABLE user_tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'"
+            )
+        if "due_at" not in task_columns:
+            await db.execute("ALTER TABLE user_tasks ADD COLUMN due_at TEXT")
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(7, ?)",
+            (utc_now().isoformat(),),
+        )
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(8, ?)",
+            (utc_now().isoformat(),),
+        )
         await db.commit()
 
     async def save_message(self, chat_id: int, role: str, content: str, keep: int = 12) -> None:
@@ -304,9 +422,222 @@ class Database:
         await cursor.close()
         return [{"role": row["role"], "content": row["content"]} for row in reversed(rows)]
 
+    async def search_history(self, chat_id: int, query: str, limit: int = 10) -> list[dict[str, str]]:
+        words = [word.strip(".,?!:;()[]{}\"'`") for word in query.split() if len(word) > 1][:8]
+        if not words:
+            return []
+        clauses = " OR ".join("content LIKE ? ESCAPE '\\'" for _ in words)
+        patterns = [
+            "%" + word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            for word in words
+        ]
+        cursor = await self._db().execute(
+            "SELECT role,content,created_at FROM messages WHERE chat_id=? AND (" + clauses + ") "
+            "ORDER BY id DESC LIMIT ?",
+            (chat_id, *patterns, max(1, min(limit, 20))),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [
+            {"role": str(row["role"]), "content": str(row["content"]),
+             "created_at": str(row["created_at"])}
+            for row in rows
+        ]
+
     async def clear_history(self, chat_id: int) -> None:
         await self._db().execute("DELETE FROM messages WHERE chat_id=?", (chat_id,))
         await self._db().commit()
+
+    async def clear_user_conversation(self, user_id: int) -> None:
+        """Clear private conversation history and long-term memory without touching shared chats."""
+        user_id = int(user_id)
+        if user_id <= 0:
+            raise ValueError("A positive private-chat user ID is required")
+        try:
+            await self._db().executescript(
+                "BEGIN IMMEDIATE;\n"
+                f"DELETE FROM messages WHERE chat_id={user_id};\n"
+                f"DELETE FROM memories WHERE user_id={user_id};\n"
+                "COMMIT;"
+            )
+        except Exception:
+            await self._db().rollback()
+            raise
+
+    async def active_users(self, limit: int = 100) -> list[dict[str, Any]]:
+        """List private-chat user IDs and activity metadata without returning chat content."""
+        cursor = await self._db().execute(
+            """
+            WITH private_users AS (
+                SELECT chat_id AS user_id FROM messages WHERE chat_id > 0
+                UNION
+                SELECT user_id FROM memories WHERE user_id > 0
+            )
+            SELECT users.user_id,
+                   MAX(messages.created_at) AS last_active,
+                   COUNT(messages.id) AS message_count
+            FROM private_users AS users
+            LEFT JOIN messages ON messages.chat_id=users.user_id
+            GROUP BY users.user_id
+            ORDER BY last_active DESC, users.user_id DESC
+            LIMIT ?
+            """,
+            (max(1, min(int(limit), 500)),),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+    async def export_user_data(self, user_id: int, private_chat_id: int | None = None) -> dict[str, Any]:
+        """Export user-owned records; chat-level content is included only for a private chat."""
+        db = self._db()
+        data: dict[str, Any] = {"user_id": user_id}
+
+        async def rows(query: str, params: tuple[Any, ...]) -> list[dict[str, Any]]:
+            cursor = await db.execute(query, params)
+            found = await cursor.fetchall()
+            await cursor.close()
+            return [dict(row) for row in found]
+
+        data["preferences"] = await rows(
+            "SELECT key,value,updated_at FROM user_preferences WHERE user_id=? ORDER BY key",
+            (user_id,),
+        )
+        data["memories"] = await rows(
+            "SELECT id,fact,created_at FROM memories WHERE user_id=? ORDER BY id",
+            (user_id,),
+        )
+        data["reminders"] = await rows(
+            "SELECT id,reminder_text,run_at,repeat_seconds,delivered,created_at "
+            "FROM reminders WHERE user_id=? ORDER BY id",
+            (user_id,),
+        )
+        data["tasks"] = await rows(
+            "SELECT id,task_text,status,priority,due_at,created_at,updated_at FROM user_tasks "
+            "WHERE user_id=? ORDER BY id",
+            (user_id,),
+        )
+        data["study_cards"] = await rows(
+            "SELECT id,question,answer,interval_days,due_at,created_at,reviewed_at "
+            "FROM study_cards WHERE user_id=? ORDER BY id",
+            (user_id,),
+        )
+        data["usage"] = await rows(
+            "SELECT model,input_tokens,output_tokens,cost_usd,created_at "
+            "FROM usage_events WHERE user_id=? ORDER BY id",
+            (user_id,),
+        )
+        data["feedback"] = await rows(
+            "SELECT rating,category,created_at FROM feedback WHERE user_id=? ORDER BY id",
+            (user_id,),
+        )
+        data["agent_jobs"] = await rows(
+            "SELECT task_type,provider,status,step_count,cost_usd,summary,created_at,updated_at "
+            "FROM agent_jobs WHERE user_id=? ORDER BY id",
+            (user_id,),
+        )
+        data["knowledge_base"] = await self.list_kb_documents(user_id)
+        for document in data["knowledge_base"]:
+            document["chunks"] = await rows(
+                "SELECT source,content FROM kb_chunks WHERE document_id=? ORDER BY id",
+                (int(document["id"]),),
+            )
+            if self.cipher:
+                for chunk in document["chunks"]:
+                    chunk["source"] = self.cipher.decrypt_text(chunk["source"])
+                    chunk["content"] = self.cipher.decrypt_text(chunk["content"])
+        data["approvals"] = await rows(
+            "SELECT kind,summary,required_approver,status,result,created_at,expires_at,payload "
+            "FROM approvals WHERE requester_id=? ORDER BY id",
+            (user_id,),
+        )
+        if self.cipher:
+            for approval in data["approvals"]:
+                approval["payload"] = json.loads(
+                    self.cipher.decrypt(approval["payload"]).decode("utf-8")
+                )
+        else:
+            for approval in data["approvals"]:
+                approval.pop("payload", None)
+        data["audit_events"] = await rows(
+            "SELECT action,target,outcome,created_at FROM audit_events "
+            "WHERE actor_id=? ORDER BY id",
+            (user_id,),
+        )
+        moderation = await rows(
+            "SELECT reason,created_at FROM blocked_users WHERE user_id=?",
+            (user_id,),
+        )
+        data["moderation"] = moderation[0] if moderation else None
+        if private_chat_id == user_id:
+            data["private_chat_history"] = await rows(
+                "SELECT role,content,created_at FROM messages WHERE chat_id=? ORDER BY id",
+                (private_chat_id,),
+            )
+            data["temporary_documents"] = await rows(
+                "SELECT id,filename,mime_type,created_at,expires_at FROM documents WHERE chat_id=? ORDER BY id",
+                (private_chat_id,),
+            )
+            for document in data["temporary_documents"]:
+                document["chunks"] = await rows(
+                    "SELECT source,content FROM document_chunks WHERE document_id=? ORDER BY id",
+                    (document["id"],),
+                )
+                document.pop("id")
+        return data
+
+    async def delete_user_data(self, user_id: int, private_chat_id: int | None = None) -> None:
+        """Delete user-owned state atomically; shared group-chat history is never removed."""
+        db = self._db()
+        user_id = int(user_id)
+        statements = [
+            "BEGIN IMMEDIATE;",
+            *(
+                f"DELETE FROM {table} WHERE user_id={user_id};"
+                for table in (
+                    "user_preferences", "memories", "reminders", "user_tasks", "usage_events",
+                    "study_cards", "feedback", "agent_jobs", "kb_documents",
+                )
+            ),
+            f"DELETE FROM approvals WHERE requester_id={user_id};",
+            f"DELETE FROM live_sessions WHERE user_id={user_id};",
+            f"DELETE FROM audit_events WHERE actor_id={user_id};",
+        ]
+        if private_chat_id == user_id:
+            chat_id = int(private_chat_id)
+            statements.extend((
+                f"DELETE FROM messages WHERE chat_id={chat_id};",
+                f"DELETE FROM documents WHERE chat_id={chat_id};",
+                f"DELETE FROM action_executions WHERE chat_id={chat_id};",
+                f"DELETE FROM admin_reply_map WHERE user_chat_id={chat_id};",
+            ))
+        statements.append("COMMIT;")
+        await db.executescript("\n".join(statements))
+
+    async def set_user_blocked(self, user_id: int, blocked_by: int, reason: str = "") -> None:
+        await self._db().execute(
+            "INSERT INTO blocked_users(user_id,reason,blocked_by,created_at) VALUES(?,?,?,?) "
+            "ON CONFLICT(user_id) DO UPDATE SET reason=excluded.reason,"
+            "blocked_by=excluded.blocked_by,created_at=excluded.created_at",
+            (user_id, reason[:240], blocked_by, utc_now().isoformat()),
+        )
+        await self._db().commit()
+        await self.audit(blocked_by, "moderation.block", str(user_id), reason[:120])
+
+    async def set_user_unblocked(self, user_id: int, unblocked_by: int) -> bool:
+        cursor = await self._db().execute("DELETE FROM blocked_users WHERE user_id=?", (user_id,))
+        changed = cursor.rowcount > 0
+        await cursor.close()
+        await self._db().commit()
+        if changed:
+            await self.audit(unblocked_by, "moderation.unblock", str(user_id), "unblocked")
+        return changed
+
+    async def is_user_blocked(self, user_id: int) -> bool:
+        cursor = await self._db().execute("SELECT 1 FROM blocked_users WHERE user_id=?", (user_id,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        return row is not None
 
     async def get_setting(self, key: str) -> str | None:
         cursor = await self._db().execute("SELECT value FROM settings WHERE key=?", (key,))
@@ -831,35 +1162,98 @@ class Database:
         await self._db().commit()
         return cursor.rowcount
 
-    async def add_reminder(self, user_id: int, chat_id: int, text: str, run_at: datetime) -> int:
+    async def add_reminder(
+        self, user_id: int, chat_id: int, text: str, run_at: datetime,
+        repeat_seconds: int | None = None,
+    ) -> int:
+        if repeat_seconds is not None and repeat_seconds < 60:
+            raise ValueError("Repeating reminders must be at least one minute apart")
         cursor = await self._db().execute("SELECT COUNT(*) AS n FROM reminders WHERE user_id=? AND delivered=0", (user_id,))
         current = await cursor.fetchone()
         await cursor.close()
         if int(current["n"]) >= self.max_pending_reminders:
             raise ValueError("User reminder limit reached")
         cursor = await self._db().execute(
-            "INSERT INTO reminders(user_id,chat_id,reminder_text,run_at,created_at) VALUES(?,?,?,?,?)",
-            (user_id, chat_id, text[:500], run_at.astimezone(UTC).isoformat(), utc_now().isoformat()),
+            "INSERT INTO reminders(user_id,chat_id,reminder_text,run_at,created_at,repeat_seconds) "
+            "VALUES(?,?,?,?,?,?)",
+            (user_id, chat_id, text[:500], run_at.astimezone(UTC).isoformat(),
+             utc_now().isoformat(), repeat_seconds),
         )
         await self._db().commit()
         return int(cursor.lastrowid or 0)
 
     async def due_reminders(self) -> list[dict[str, Any]]:
         cursor = await self._db().execute(
-            "SELECT id,user_id,chat_id,reminder_text FROM reminders WHERE delivered=0 AND run_at<=?",
-            (utc_now().isoformat(),),
+            "SELECT id,user_id,chat_id,reminder_text,repeat_seconds,attempts FROM reminders "
+            "WHERE delivered=0 AND paused=0 AND run_at<=? "
+            "AND (claimed_until IS NULL OR claimed_until<=?)",
+            (utc_now().isoformat(), utc_now().isoformat()),
         )
         rows = await cursor.fetchall()
         await cursor.close()
         return [dict(row) for row in rows]
 
-    async def mark_reminder_delivered(self, reminder_id: int) -> None:
-        await self._db().execute("UPDATE reminders SET delivered=1 WHERE id=?", (reminder_id,))
+    async def claim_due_reminders(self, limit: int = 100, lease_seconds: int = 300) -> list[dict[str, Any]]:
+        now = utc_now()
+        now_text = now.isoformat()
+        lease_until = (now + timedelta(seconds=max(30, lease_seconds))).isoformat()
+        cursor = await self._db().execute(
+            "UPDATE reminders SET claimed_until=?,attempts=attempts+1 "
+            "WHERE id IN (SELECT id FROM reminders WHERE delivered=0 AND paused=0 AND run_at<=? "
+            "AND (claimed_until IS NULL OR claimed_until<=?) ORDER BY run_at,id LIMIT ?) "
+            "RETURNING id,user_id,chat_id,reminder_text,repeat_seconds,attempts",
+            (lease_until, now_text, now_text, max(1, min(limit, 500))),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
         await self._db().commit()
+        return [dict(row) for row in rows]
+
+    async def defer_reminder(self, reminder_id: int, retry_after_seconds: int) -> bool:
+        delay = max(30, min(retry_after_seconds, 86400))
+        retry_at = (utc_now() + timedelta(seconds=delay)).isoformat()
+        cursor = await self._db().execute(
+            "UPDATE reminders SET claimed_until=? WHERE id=? AND delivered=0 AND paused=0",
+            (retry_at, reminder_id),
+        )
+        changed = cursor.rowcount == 1
+        await cursor.close()
+        await self._db().commit()
+        return changed
+
+    async def mark_reminder_delivered(self, reminder_id: int) -> None:
+        db = self._db()
+        cursor = await db.execute(
+            "SELECT run_at,repeat_seconds FROM reminders WHERE id=? AND delivered=0",
+            (reminder_id,),
+        )
+        reminder = await cursor.fetchone()
+        await cursor.close()
+        if reminder is None:
+            return
+        interval = reminder["repeat_seconds"]
+        if interval is None:
+            await db.execute(
+                "UPDATE reminders SET delivered=1,claimed_until=NULL,attempts=0 WHERE id=?",
+                (reminder_id,),
+            )
+        else:
+            next_run = datetime.fromisoformat(str(reminder["run_at"]))
+            now = utc_now()
+            interval_delta = timedelta(seconds=int(interval))
+            if next_run <= now:
+                missed = int((now - next_run) // interval_delta) + 1
+                next_run += missed * interval_delta
+            await db.execute(
+                "UPDATE reminders SET run_at=?,claimed_until=NULL,attempts=0 WHERE id=? AND delivered=0",
+                (next_run.isoformat(), reminder_id),
+            )
+        await db.commit()
 
     async def list_reminders(self, user_id: int) -> list[dict[str, Any]]:
         cursor = await self._db().execute(
-            "SELECT id,reminder_text,run_at FROM reminders WHERE user_id=? AND delivered=0 ORDER BY run_at",
+            "SELECT id,reminder_text,run_at,repeat_seconds,paused FROM reminders "
+            "WHERE user_id=? AND delivered=0 ORDER BY paused,run_at",
             (user_id,),
         )
         rows = await cursor.fetchall()
@@ -872,6 +1266,153 @@ class Database:
         )
         await self._db().commit()
         return cursor.rowcount > 0
+
+    async def set_reminder_paused(self, user_id: int, reminder_id: int, paused: bool) -> bool:
+        cursor = await self._db().execute(
+            "UPDATE reminders SET paused=? WHERE id=? AND user_id=? AND delivered=0",
+            (int(paused), reminder_id, user_id),
+        )
+        changed = cursor.rowcount == 1
+        await cursor.close()
+        await self._db().commit()
+        return changed
+
+    async def snooze_reminder(self, user_id: int, reminder_id: int, delay_seconds: int) -> bool:
+        if not 60 <= delay_seconds <= 365 * 86400:
+            raise ValueError("Snooze must be between one minute and 365 days")
+        cursor = await self._db().execute(
+            "UPDATE reminders SET run_at=?,claimed_until=NULL WHERE id=? AND user_id=? AND delivered=0",
+            ((utc_now() + timedelta(seconds=delay_seconds)).isoformat(), reminder_id, user_id),
+        )
+        changed = cursor.rowcount == 1
+        await cursor.close()
+        await self._db().commit()
+        return changed
+
+    async def add_task(
+        self, user_id: int, text: str, priority: str = "normal", due_at: str | None = None,
+    ) -> int:
+        if priority not in {"low", "normal", "high", "urgent"}:
+            raise ValueError("Invalid task priority")
+        if due_at is not None:
+            try:
+                date.fromisoformat(due_at)
+            except ValueError as exc:
+                raise ValueError("Task deadline must be an ISO date") from exc
+        cursor = await self._db().execute(
+            "SELECT COUNT(*) AS n FROM user_tasks WHERE user_id=? AND status='open'",
+            (user_id,),
+        )
+        current = await cursor.fetchone()
+        await cursor.close()
+        if int(current["n"]) >= 100:
+            raise ValueError("Open task limit reached")
+        now = utc_now().isoformat()
+        cursor = await self._db().execute(
+            "INSERT INTO user_tasks(user_id,task_text,priority,due_at,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?)",
+            (user_id, text[:500], priority, due_at, now, now),
+        )
+        await self._db().commit()
+        return int(cursor.lastrowid or 0)
+
+    async def list_tasks(self, user_id: int) -> list[dict[str, Any]]:
+        cursor = await self._db().execute(
+            "SELECT id,task_text,status,priority,due_at,created_at,updated_at FROM user_tasks "
+            "WHERE user_id=? ORDER BY CASE status WHEN 'open' THEN 0 ELSE 1 END,"
+            "CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,"
+            "CASE WHEN due_at IS NULL THEN 1 ELSE 0 END,due_at,id DESC LIMIT 100",
+            (user_id,),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+    async def complete_task(self, user_id: int, task_id: int) -> bool:
+        cursor = await self._db().execute(
+            "UPDATE user_tasks SET status='done',updated_at=? "
+            "WHERE id=? AND user_id=? AND status='open'",
+            (utc_now().isoformat(), task_id, user_id),
+        )
+        changed = cursor.rowcount == 1
+        await cursor.close()
+        await self._db().commit()
+        return changed
+
+    async def delete_task(self, user_id: int, task_id: int) -> bool:
+        cursor = await self._db().execute(
+            "DELETE FROM user_tasks WHERE id=? AND user_id=?",
+            (task_id, user_id),
+        )
+        changed = cursor.rowcount == 1
+        await cursor.close()
+        await self._db().commit()
+        return changed
+
+    async def add_study_card(self, user_id: int, question: str, answer: str) -> int:
+        now = utc_now().isoformat()
+        cursor = await self._db().execute(
+            "SELECT COUNT(*) AS n FROM study_cards WHERE user_id=?", (user_id,),
+        )
+        current = await cursor.fetchone()
+        await cursor.close()
+        if int(current["n"]) >= 500:
+            raise ValueError("Study card limit reached")
+        cursor = await self._db().execute(
+            "INSERT INTO study_cards(user_id,question,answer,due_at,created_at) "
+            "VALUES(?,?,?,?,?)",
+            (user_id, question[:500], answer[:1000], now, now),
+        )
+        await self._db().commit()
+        return int(cursor.lastrowid or 0)
+
+    async def list_study_cards(
+        self, user_id: int, *, due_only: bool = False, limit: int = 30,
+    ) -> list[dict[str, Any]]:
+        query = (
+            "SELECT id,question,answer,interval_days,due_at,created_at,reviewed_at "
+            "FROM study_cards WHERE user_id=?"
+        )
+        params: tuple[Any, ...] = (user_id,)
+        if due_only:
+            query += " AND due_at<=?"
+            params += (utc_now().isoformat(),)
+        query += " ORDER BY due_at,id LIMIT ?"
+        params += (max(1, min(limit, 100)),)
+        cursor = await self._db().execute(query, params)
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+    async def review_study_card(self, user_id: int, card_id: int, *, remembered: bool) -> bool:
+        cursor = await self._db().execute(
+            "SELECT interval_days FROM study_cards WHERE id=? AND user_id=?",
+            (card_id, user_id),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        if row is None:
+            return False
+        current = int(row["interval_days"])
+        interval = min(180, max(1, current * 2 if current else 1)) if remembered else 0
+        now = utc_now()
+        due_at = (now + timedelta(days=interval)).isoformat()
+        await self._db().execute(
+            "UPDATE study_cards SET interval_days=?,due_at=?,reviewed_at=? "
+            "WHERE id=? AND user_id=?",
+            (interval, due_at, now.isoformat(), card_id, user_id),
+        )
+        await self._db().commit()
+        return True
+
+    async def delete_study_card(self, user_id: int, card_id: int) -> bool:
+        cursor = await self._db().execute(
+            "DELETE FROM study_cards WHERE id=? AND user_id=?", (card_id, user_id),
+        )
+        changed = cursor.rowcount == 1
+        await cursor.close()
+        await self._db().commit()
+        return changed
 
     async def record_usage(
         self, user_id: int, model: str, usage: dict[str, Any]
@@ -897,9 +1438,11 @@ class Database:
     async def reserve_usage(
         self, user_id: int, model: str, estimated_cost: float,
         user_request_limit: int, global_daily_cost_limit: float,
+        user_monthly_request_limit: int = 1200, user_monthly_cost_limit: float = 50.0,
     ) -> tuple[int | None, str | None]:
         """Atomically reserve one request and its estimated cost against daily caps."""
         start = utc_now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        month_start = utc_now().replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
         estimate = max(0.0, estimated_cost)
         async with self._usage_lock:
             db = self._db()
@@ -912,6 +1455,17 @@ class Database:
             await cursor.close()
             if int(user_today["requests"]) >= user_request_limit:
                 return None, "request_limit"
+            cursor = await db.execute(
+                "SELECT COUNT(*) AS requests,COALESCE(SUM(cost_usd),0) AS cost "
+                "FROM usage_events WHERE user_id=? AND created_at>=?",
+                (user_id, month_start),
+            )
+            user_month = await cursor.fetchone()
+            await cursor.close()
+            if int(user_month["requests"]) >= user_monthly_request_limit:
+                return None, "monthly_request_limit"
+            if float(user_month["cost"]) + estimate > user_monthly_cost_limit:
+                return None, "monthly_cost_limit"
             cursor = await db.execute(
                 "SELECT COALESCE(SUM(cost_usd),0) AS cost FROM usage_events WHERE created_at>=?", (start,)
             )
@@ -938,6 +1492,7 @@ class Database:
 
     async def usage_today(self, user_id: int) -> dict[str, float | int]:
         start = utc_now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        month_start = utc_now().replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
         cursor = await self._db().execute(
             "SELECT COUNT(*) AS requests,COALESCE(SUM(cost_usd),0) AS cost "
             "FROM usage_events WHERE user_id=? AND created_at>=?",
@@ -945,7 +1500,17 @@ class Database:
         )
         row = await cursor.fetchone()
         await cursor.close()
-        return {"requests": int(row["requests"]), "cost": float(row["cost"])}
+        cursor = await self._db().execute(
+            "SELECT COUNT(*) AS requests,COALESCE(SUM(cost_usd),0) AS cost "
+            "FROM usage_events WHERE user_id=? AND created_at>=?",
+            (user_id, month_start),
+        )
+        month = await cursor.fetchone()
+        await cursor.close()
+        return {
+            "requests": int(row["requests"]), "cost": float(row["cost"]),
+            "monthly_requests": int(month["requests"]), "monthly_cost": float(month["cost"]),
+        }
 
     async def record_provider_file(self, file_id: str) -> None:
         await self.set_setting(f"provider_file:{file_id}", "pending_cleanup")
