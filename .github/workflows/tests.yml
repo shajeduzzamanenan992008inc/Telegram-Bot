@@ -15,7 +15,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
       - run: uv sync --locked --python 3.15 --group build --group test
       - run: python -m pip install ruff==0.17.1
       - run: ruff check --select E4,E7,E9,F src tests
@@ -56,6 +56,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
       - run: uv sync --locked --python ${{ matrix.python-version }} --group build --group test
       - run: uv run --locked --python ${{ matrix.python-version }} pytest -q
