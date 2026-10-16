@@ -58,4 +58,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --locked --python ${{ matrix.python-version }} --group build --group test
+      - name: Install Bengali PDF fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends fonts-noto-core
       - run: uv run --locked --python ${{ matrix.python-version }} pytest -q
