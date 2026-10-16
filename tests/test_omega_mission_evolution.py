@@ -59,6 +59,7 @@ class _ParallelMissionRouter(_MissionRouter):
         super().__init__()
         self.active = 0
         self.max_active = 0
+        self.both_started = asyncio.Event()
 
     async def complete(self, messages, **kwargs):
         self.calls.append(messages)
@@ -70,8 +71,12 @@ class _ParallelMissionRouter(_MissionRouter):
             )
         self.active += 1
         self.max_active = max(self.max_active, self.active)
-        await asyncio.sleep(0.03)
-        self.active -= 1
+        if self.active >= 2:
+            self.both_started.set()
+        try:
+            await asyncio.wait_for(self.both_started.wait(), timeout=2)
+        finally:
+            self.active -= 1
         return AssistantResult(f"Parallel analysis {self.active}", "local::test-model")
 
 
@@ -183,7 +188,7 @@ def test_independent_mission_steps_run_concurrently_and_checkpoint_both(tmp_path
                 101, 101, "Summarize two independent questions", local_only=True,
                 primary_model="local::test-model", notify=lambda _text: asyncio.sleep(0),
             )
-            await asyncio.wait_for(control._tasks[mission_id], timeout=3)
+            await asyncio.wait_for(control._tasks[mission_id], timeout=8)
             record = await db.get_mission(mission_id, 101)
             assert record and record["state"] == "completed"
             assert record["completed_steps"] == 2
