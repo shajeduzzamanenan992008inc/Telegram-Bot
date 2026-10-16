@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import json
 import math
 import os
@@ -38,6 +40,34 @@ def _usage_float(value: Any) -> float:
         return 0.0
 
 
+def _normalize_sticker_tags(tags: list[str] | None) -> list[str]:
+    if not tags:
+        return []
+    normalized: list[str] = []
+    for tag in tags:
+        value = " ".join(str(tag).split())[:40]
+        if value and value.casefold() not in {item.casefold() for item in normalized}:
+            normalized.append(value)
+        if len(normalized) >= 20:
+            break
+    return normalized
+
+
+def _sticker_row(row: sqlite3.Row) -> dict[str, Any]:
+    result = dict(row)
+    try:
+        parsed_tags = json.loads(result.get("tags") or "[]")
+        result["tags"] = _normalize_sticker_tags(
+            parsed_tags if isinstance(parsed_tags, list) else [],
+        )
+    except (TypeError, ValueError, json.JSONDecodeError):
+        result["tags"] = []
+    result["approved"] = bool(result.get("approved", 0))
+    result["is_animated"] = bool(result.get("is_animated", 0))
+    result["is_video"] = bool(result.get("is_video", 0))
+    return result
+
+
 class Database:
     def __init__(
         self, path: Path, retention_hours: int = 24, max_pending_reminders: int = 20,
@@ -52,6 +82,7 @@ class Database:
         self.connection: aiosqlite.Connection | None = None
         self._usage_lock = asyncio.Lock()
         self._kb_lock = asyncio.Lock()
+        self._sticker_lock = asyncio.Lock()
 
     async def open(self) -> None:
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -149,6 +180,21 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_messages_chat_created
                 ON messages(chat_id, created_at DESC);
+            CREATE TABLE IF NOT EXISTS group_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                display_name TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_group_messages_chat_id
+                ON group_messages(chat_id, id DESC);
+            CREATE TABLE IF NOT EXISTS chat_settings (
+                chat_id INTEGER PRIMARY KEY,
+                mode TEXT NOT NULL DEFAULT 'default',
+                updated_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS live_sessions (
                 user_id INTEGER PRIMARY KEY,
                 active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
@@ -171,6 +217,31 @@ class Database:
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY(user_id, key)
             );
+            CREATE TABLE IF NOT EXISTS sticker_registry (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_id TEXT NOT NULL,
+                file_unique_id TEXT,
+                category TEXT NOT NULL,
+                emoji TEXT DEFAULT '',
+                label TEXT DEFAULT '',
+                added_by INTEGER DEFAULT 0,
+                added_at TEXT NOT NULL,
+                set_name TEXT NOT NULL DEFAULT '',
+                set_title TEXT NOT NULL DEFAULT '',
+                sticker_type TEXT NOT NULL DEFAULT 'regular',
+                is_animated INTEGER NOT NULL DEFAULT 0,
+                is_video INTEGER NOT NULL DEFAULT 0,
+                width INTEGER NOT NULL DEFAULT 0,
+                height INTEGER NOT NULL DEFAULT 0,
+                tags TEXT NOT NULL DEFAULT '[]',
+                source_type TEXT NOT NULL DEFAULT 'manual',
+                approved INTEGER NOT NULL DEFAULT 0,
+                usage_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT '',
+                last_used_at TEXT,
+                send_failures INTEGER NOT NULL DEFAULT 0
+            );
+
             CREATE TABLE IF NOT EXISTS memories (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -178,6 +249,28 @@ class Database:
                 created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id, id DESC);
+            CREATE TABLE IF NOT EXISTS user_memories (
+                user_id INTEGER NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                PRIMARY KEY(user_id, key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_user_memories_user
+                ON user_memories(user_id, key);
+            CREATE TABLE IF NOT EXISTS learned_knowledge (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                category TEXT NOT NULL,
+                fact_key TEXT NOT NULL,
+                fact_value TEXT NOT NULL,
+                source_user_id INTEGER,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, category, fact_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_learned_knowledge_scope
+                ON learned_knowledge(user_id, category, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_learned_knowledge_source
+                ON learned_knowledge(source_user_id);
             CREATE TABLE IF NOT EXISTS documents (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id INTEGER NOT NULL,
@@ -398,6 +491,162 @@ class Database:
             "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(8, ?)",
             (utc_now().isoformat(),),
         )
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(9, ?)",
+            (utc_now().isoformat(),),
+        )
+        cursor = await db.execute("PRAGMA table_info(admin_reply_map)")
+        admin_map_columns = {str(row["name"]) for row in await cursor.fetchall()}
+        await cursor.close()
+        if "user_id" not in admin_map_columns:
+            await db.execute("ALTER TABLE admin_reply_map ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0")
+        if "theme_id" not in admin_map_columns:
+            await db.execute("ALTER TABLE admin_reply_map ADD COLUMN theme_id TEXT NOT NULL DEFAULT ''")
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(10, ?)",
+            (utc_now().isoformat(),),
+        )
+        await db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS task_dependencies (
+                task_id INTEGER NOT NULL REFERENCES user_tasks(id) ON DELETE CASCADE,
+                depends_on_task_id INTEGER NOT NULL REFERENCES user_tasks(id) ON DELETE CASCADE,
+                PRIMARY KEY(task_id, depends_on_task_id),
+                CHECK(task_id != depends_on_task_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_task_dependencies_prerequisite
+                ON task_dependencies(depends_on_task_id, task_id);
+            """
+        )
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(11, ?)",
+            (utc_now().isoformat(),),
+        )
+        cursor = await db.execute("PRAGMA table_info(sticker_registry)")
+        sticker_columns = {str(row["name"]) for row in await cursor.fetchall()}
+        await cursor.close()
+        sticker_migrations = (
+            ("file_unique_id", "TEXT"),
+            ("set_name", "TEXT NOT NULL DEFAULT ''"),
+            ("set_title", "TEXT NOT NULL DEFAULT ''"),
+            ("sticker_type", "TEXT NOT NULL DEFAULT 'regular'"),
+            ("is_animated", "INTEGER NOT NULL DEFAULT 0"),
+            ("is_video", "INTEGER NOT NULL DEFAULT 0"),
+            ("width", "INTEGER NOT NULL DEFAULT 0"),
+            ("height", "INTEGER NOT NULL DEFAULT 0"),
+            ("tags", "TEXT NOT NULL DEFAULT '[]'"),
+            ("source_type", "TEXT NOT NULL DEFAULT 'manual'"),
+            ("approved", "INTEGER NOT NULL DEFAULT 0"),
+            ("usage_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("created_at", "TEXT NOT NULL DEFAULT ''"),
+            ("last_used_at", "TEXT"),
+            ("send_failures", "INTEGER NOT NULL DEFAULT 0"),
+        )
+        for column, definition in sticker_migrations:
+            if column not in sticker_columns:
+                await db.execute(f"ALTER TABLE sticker_registry ADD COLUMN {column} {definition}")
+        await db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS sticker_user_usage (
+                user_id INTEGER PRIMARY KEY,
+                sticker_id INTEGER NOT NULL REFERENCES sticker_registry(id),
+                last_used_at TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_sticker_registry_unique_id
+                ON sticker_registry(file_unique_id) WHERE file_unique_id IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_sticker_registry_category
+                ON sticker_registry(category, approved);
+            CREATE INDEX IF NOT EXISTS idx_sticker_registry_set
+                ON sticker_registry(set_name);
+            CREATE INDEX IF NOT EXISTS idx_sticker_registry_status
+                ON sticker_registry(approved, id DESC);
+            """
+        )
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(12, ?)",
+            (utc_now().isoformat(),),
+        )
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(13, ?)",
+            (utc_now().isoformat(),),
+        )
+        await db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS missions (
+                id TEXT PRIMARY KEY,
+                owner_id INTEGER NOT NULL,
+                chat_id INTEGER NOT NULL,
+                task_fingerprint TEXT NOT NULL,
+                state TEXT NOT NULL CHECK(state IN (
+                    'planning','running','paused','completed','failed','cancelled','expired'
+                )),
+                payload BLOB NOT NULL,
+                completed_steps INTEGER NOT NULL DEFAULT 0,
+                step_count INTEGER NOT NULL DEFAULT 0,
+                error_code TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_missions_owner_created
+                ON missions(owner_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_missions_state_updated
+                ON missions(state, updated_at);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_missions_active_fingerprint
+                ON missions(owner_id, task_fingerprint)
+                WHERE state IN ('planning','running','paused');
+            CREATE TABLE IF NOT EXISTS mission_steps (
+                mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+                step_index INTEGER NOT NULL,
+                state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','completed')),
+                details BLOB NOT NULL,
+                result BLOB,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(mission_id,step_index)
+            );
+            CREATE INDEX IF NOT EXISTS idx_mission_steps_state
+                ON mission_steps(mission_id,state,step_index);
+
+            CREATE TABLE IF NOT EXISTS evolution_proposals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                creator_id INTEGER NOT NULL,
+                summary TEXT NOT NULL,
+                patch_hash TEXT NOT NULL,
+                source_hash TEXT NOT NULL DEFAULT '',
+                payload BLOB NOT NULL,
+                state TEXT NOT NULL CHECK(state IN (
+                    'testing','awaiting_approval','approved_staging','rejected','cancelled',
+                    'expired','staging_verified','awaiting_deployment_approval',
+                    'deployment_approved','deployed','failed','rolled_back'
+                )),
+                test_passed INTEGER,
+                test_report BLOB,
+                test_exit_code INTEGER,
+                test_timed_out INTEGER NOT NULL DEFAULT 0,
+                reviewed_hash TEXT NOT NULL DEFAULT '',
+                approver_id INTEGER,
+                approved_at TEXT,
+                deploy_approver_id INTEGER,
+                deploy_approved_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_evolution_state_created
+                ON evolution_proposals(state, created_at DESC);
+            """
+        )
+        cursor = await db.execute("PRAGMA table_info(evolution_proposals)")
+        evolution_columns = {str(row["name"]) for row in await cursor.fetchall()}
+        await cursor.close()
+        if "source_hash" not in evolution_columns:
+            await db.execute(
+                "ALTER TABLE evolution_proposals ADD COLUMN source_hash TEXT NOT NULL DEFAULT ''",
+            )
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(14, ?)",
+            (utc_now().isoformat(),),
+        )
         await db.commit()
 
     async def save_message(self, chat_id: int, role: str, content: str, keep: int = 12) -> None:
@@ -421,6 +670,63 @@ class Database:
         rows = await cursor.fetchall()
         await cursor.close()
         return [{"role": row["role"], "content": row["content"]} for row in reversed(rows)]
+
+    async def save_group_message(
+        self, chat_id: int, user_id: int, display_name: str, content: str, keep: int = 80,
+    ) -> None:
+        db = self._db()
+        await db.execute(
+            """
+            INSERT INTO group_messages(chat_id, user_id, display_name, content, created_at)
+            VALUES(?,?,?,?,?)
+            """,
+            (chat_id, user_id, display_name[:100], content[:2000], utc_now().isoformat()),
+        )
+        await db.execute(
+            """
+            DELETE FROM group_messages
+            WHERE chat_id=? AND id NOT IN (
+                SELECT id FROM group_messages WHERE chat_id=? ORDER BY id DESC LIMIT ?
+            )
+            """,
+            (chat_id, chat_id, max(50, min(keep, 100))),
+        )
+        await db.commit()
+
+    async def recent_group_messages(self, chat_id: int, limit: int = 80) -> list[dict[str, str]]:
+        cursor = await self._db().execute(
+            """
+            SELECT display_name, content, created_at
+            FROM group_messages WHERE chat_id=?
+            ORDER BY id DESC LIMIT ?
+            """,
+            (chat_id, max(1, min(limit, 100))),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [
+            {"display_name": str(row["display_name"]), "content": str(row["content"]),
+             "created_at": str(row["created_at"])}
+            for row in reversed(rows)
+        ]
+
+    async def set_chat_mode(self, chat_id: int, mode: str) -> None:
+        await self._db().execute(
+            """
+            INSERT INTO chat_settings(chat_id, mode, updated_at) VALUES(?,?,?)
+            ON CONFLICT(chat_id) DO UPDATE SET mode=excluded.mode, updated_at=excluded.updated_at
+            """,
+            (chat_id, mode, utc_now().isoformat()),
+        )
+        await self._db().commit()
+
+    async def get_chat_mode(self, chat_id: int) -> str:
+        cursor = await self._db().execute(
+            "SELECT mode FROM chat_settings WHERE chat_id=?", (chat_id,),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        return str(row["mode"]) if row else "default"
 
     async def search_history(self, chat_id: int, query: str, limit: int = 10) -> list[dict[str, str]]:
         words = [word.strip(".,?!:;()[]{}\"'`") for word in query.split() if len(word) > 1][:8]
@@ -458,6 +764,8 @@ class Database:
                 "BEGIN IMMEDIATE;\n"
                 f"DELETE FROM messages WHERE chat_id={user_id};\n"
                 f"DELETE FROM memories WHERE user_id={user_id};\n"
+                f"DELETE FROM user_memories WHERE user_id={user_id};\n"
+                f"DELETE FROM learned_knowledge WHERE user_id={user_id} OR source_user_id={user_id};\n"
                 "COMMIT;"
             )
         except Exception:
@@ -507,16 +815,33 @@ class Database:
             "SELECT id,fact,created_at FROM memories WHERE user_id=? ORDER BY id",
             (user_id,),
         )
+        data["profile_facts"] = await rows(
+            "SELECT key,value FROM user_memories WHERE user_id=? ORDER BY key",
+            (user_id,),
+        )
+        data["learned_knowledge"] = await rows(
+            "SELECT user_id,category,fact_key,fact_value,updated_at "
+            "FROM learned_knowledge WHERE user_id=? OR source_user_id=? "
+            "ORDER BY user_id,category,fact_key",
+            (user_id, user_id),
+        )
         data["reminders"] = await rows(
             "SELECT id,reminder_text,run_at,repeat_seconds,delivered,created_at "
             "FROM reminders WHERE user_id=? ORDER BY id",
             (user_id,),
         )
         data["tasks"] = await rows(
-            "SELECT id,task_text,status,priority,due_at,created_at,updated_at FROM user_tasks "
+            "SELECT id,task_text,status,priority,due_at,created_at,updated_at,"
+            "(SELECT GROUP_CONCAT(depends_on_task_id) FROM task_dependencies "
+            "WHERE task_id=user_tasks.id) AS dependency_ids FROM user_tasks "
             "WHERE user_id=? ORDER BY id",
             (user_id,),
         )
+        for task in data["tasks"]:
+            raw_dependencies = task.pop("dependency_ids")
+            task["depends_on"] = (
+                [int(item) for item in raw_dependencies.split(",")] if raw_dependencies else []
+            )
         data["study_cards"] = await rows(
             "SELECT id,question,answer,interval_days,due_at,created_at,reviewed_at "
             "FROM study_cards WHERE user_id=? ORDER BY id",
@@ -529,6 +854,58 @@ class Database:
         )
         data["feedback"] = await rows(
             "SELECT rating,category,created_at FROM feedback WHERE user_id=? ORDER BY id",
+            (user_id,),
+        )
+        if self.cipher:
+            mission_cursor = await db.execute(
+                "SELECT * FROM missions WHERE owner_id=? ORDER BY created_at", (user_id,),
+            )
+            mission_rows = await mission_cursor.fetchall()
+            await mission_cursor.close()
+            data["missions"] = [
+                {
+                    "id": str(row["id"]), "state": str(row["state"]),
+                    "completed_steps": int(row["completed_steps"]),
+                    "step_count": int(row["step_count"]), "created_at": str(row["created_at"]),
+                    "updated_at": str(row["updated_at"]),
+                    "details": json.loads(self.cipher.decrypt_text(row["payload"])),
+                }
+                for row in mission_rows
+            ]
+            for mission in data["missions"]:
+                record = await self.get_mission(str(mission["id"]), user_id)
+                if record:
+                    mission["details"] = record["payload"]
+        else:
+            data["missions"] = []
+        proposal_cursor = await db.execute(
+            "SELECT id,summary,patch_hash,source_hash,state,test_passed,created_at,expires_at,payload "
+            "FROM evolution_proposals WHERE creator_id=? ORDER BY id", (user_id,),
+        )
+        proposal_rows = await proposal_cursor.fetchall()
+        await proposal_cursor.close()
+        data["evolution_proposals"] = []
+        if self.cipher:
+            for row in proposal_rows:
+                payload = json.loads(self.cipher.decrypt_text(row["payload"]))
+                patch_text = ""
+                if isinstance(payload, dict) and payload.get("patch"):
+                    try:
+                        patch_text = base64.b64decode(payload["patch"], validate=True).decode("utf-8")
+                    except (ValueError, UnicodeDecodeError):
+                        patch_text = ""
+                data["evolution_proposals"].append({
+                    key: row[key] for key in (
+                        "id", "summary", "patch_hash", "source_hash", "state",
+                        "test_passed", "created_at", "expires_at",
+                    )
+                } | {
+                    "summary": str(payload.get("summary", "")) if isinstance(payload, dict) else "",
+                    "patch": patch_text,
+                })
+        data["sticker_usage"] = await rows(
+            "SELECT r.category,r.emoji,u.last_used_at FROM sticker_user_usage u "
+            "JOIN sticker_registry r ON r.id=u.sticker_id WHERE u.user_id=?",
             (user_id,),
         )
         data["agent_jobs"] = await rows(
@@ -595,13 +972,18 @@ class Database:
             *(
                 f"DELETE FROM {table} WHERE user_id={user_id};"
                 for table in (
-                    "user_preferences", "memories", "reminders", "user_tasks", "usage_events",
+                    "user_preferences", "memories", "user_memories", "reminders", "user_tasks", "usage_events",
                     "study_cards", "feedback", "agent_jobs", "kb_documents",
                 )
             ),
+            f"DELETE FROM missions WHERE owner_id={user_id};",
+            f"DELETE FROM evolution_proposals WHERE creator_id={user_id};",
+            f"DELETE FROM learned_knowledge WHERE user_id={user_id} OR source_user_id={user_id};",
             f"DELETE FROM approvals WHERE requester_id={user_id};",
             f"DELETE FROM live_sessions WHERE user_id={user_id};",
             f"DELETE FROM audit_events WHERE actor_id={user_id};",
+            f"DELETE FROM sticker_user_usage WHERE user_id={user_id};",
+            f"UPDATE sticker_registry SET added_by=0 WHERE added_by={user_id};",
         ]
         if private_chat_id == user_id:
             chat_id = int(private_chat_id)
@@ -693,12 +1075,14 @@ class Database:
         await cursor.close()
         return int(row["n"])
 
-    async def map_admin_message(self, message_id: int, user_chat_id: int) -> None:
+    async def map_admin_message(
+        self, message_id: int, user_chat_id: int, user_id: int = 0, theme_id: str = "",
+    ) -> None:
         db = self._db()
         await db.execute(
-            "INSERT OR REPLACE INTO admin_reply_map(admin_message_id,user_chat_id,created_at) "
-            "VALUES(?,?,?)",
-            (message_id, user_chat_id, utc_now().isoformat()),
+            "INSERT OR REPLACE INTO admin_reply_map(admin_message_id,user_chat_id,user_id,theme_id,created_at) "
+            "VALUES(?,?,?,?,?)",
+            (message_id, user_chat_id, user_id, theme_id[:40], utc_now().isoformat()),
         )
         await db.execute(
             "DELETE FROM admin_reply_map WHERE admin_message_id NOT IN "
@@ -713,6 +1097,21 @@ class Database:
         row = await cursor.fetchone()
         await cursor.close()
         return int(row["user_chat_id"]) if row else None
+
+    async def admin_reply_context(self, message_id: int) -> dict[str, Any] | None:
+        cursor = await self._db().execute(
+            "SELECT user_chat_id,user_id,theme_id FROM admin_reply_map WHERE admin_message_id=?",
+            (message_id,),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        if not row:
+            return None
+        return {
+            "user_chat_id": int(row["user_chat_id"]),
+            "user_id": int(row["user_id"]),
+            "theme_id": str(row["theme_id"] or ""),
+        }
 
     async def get_preference(self, user_id: int, key: str, default: str) -> str:
         cursor = await self._db().execute(
@@ -729,6 +1128,24 @@ class Database:
             (user_id, key, value, utc_now().isoformat()),
         )
         await self._db().commit()
+
+    async def delete_preferences(
+        self, user_id: int, *, prefix: str | None = None, keys: tuple[str, ...] = (),
+    ) -> None:
+        """Delete selected user preference keys without touching other profile data."""
+        db = self._db()
+        if prefix is not None:
+            await db.execute(
+                "DELETE FROM user_preferences WHERE user_id=? AND substr(key,1,?)=?",
+                (user_id, len(prefix), prefix),
+            )
+        if keys:
+            placeholders = ",".join("?" for _ in keys)
+            await db.execute(
+                f"DELETE FROM user_preferences WHERE user_id=? AND key IN ({placeholders})",
+                (user_id, *keys),
+            )
+        await db.commit()
 
     async def add_memory(self, user_id: int, fact: str) -> int:
         cursor = await self._db().execute(
@@ -752,9 +1169,122 @@ class Database:
         await cursor.close()
         return [(int(row["id"]), str(row["fact"])) for row in rows]
 
+    async def save_user_fact(self, user_id: int, key: str, value: str) -> None:
+        normalized_key = key.strip().casefold()
+        normalized_value = value.strip()
+        if user_id <= 0 or not normalized_key or len(normalized_key) > 64:
+            raise ValueError("A positive user ID and a key of 1-64 characters are required")
+        if not normalized_value or len(normalized_value) > 500:
+            raise ValueError("A user fact value must contain 1-500 characters")
+        db = self._db()
+        await db.execute(
+            """
+            INSERT INTO user_memories(user_id, key, value) VALUES(?,?,?)
+            ON CONFLICT(user_id,key) DO UPDATE SET value=excluded.value
+            """,
+            (user_id, normalized_key, normalized_value),
+        )
+        await db.execute(
+            """
+            DELETE FROM user_memories WHERE user_id=? AND key NOT IN (
+                SELECT key FROM user_memories WHERE user_id=? ORDER BY rowid DESC LIMIT 50
+            )
+            """,
+            (user_id, user_id),
+        )
+        await db.commit()
+
+    async def get_user_facts(self, user_id: int) -> dict[str, str]:
+        cursor = await self._db().execute(
+            "SELECT key,value FROM user_memories WHERE user_id=? ORDER BY rowid DESC LIMIT 50",
+            (user_id,),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return {str(row["key"]): str(row["value"]) for row in rows}
+
+    async def save_learned_knowledge(
+        self, user_id: int, category: str, fact_key: str, fact_value: str, *,
+        source_user_id: int | None = None,
+    ) -> None:
+        category = category.strip().casefold()
+        normalized_key = fact_key.strip().casefold()
+        normalized_value = fact_value.strip()
+        allowed_categories = {"user_preference", "fact", "entity", "general_knowledge"}
+        if category not in allowed_categories:
+            raise ValueError("Unsupported learned knowledge category")
+        if user_id < 0 or (user_id == 0 and category != "general_knowledge"):
+            raise ValueError("Only general knowledge may use the global scope")
+        if user_id > 0 and category == "general_knowledge":
+            raise ValueError("General knowledge must use the global scope")
+        if source_user_id is not None and source_user_id <= 0:
+            raise ValueError("A source user ID must be positive")
+        if user_id == 0 and source_user_id is None:
+            raise ValueError("Global knowledge must record its contributing user")
+        if not normalized_key or len(normalized_key) > 64:
+            raise ValueError("A fact key must contain 1-64 characters")
+        if not normalized_value or len(normalized_value) > 500:
+            raise ValueError("A learned fact must contain 1-500 characters")
+
+        db = self._db()
+        await db.execute(
+            """
+            INSERT INTO learned_knowledge(
+                user_id, category, fact_key, fact_value, source_user_id, updated_at
+            ) VALUES(?,?,?,?,?,?)
+            ON CONFLICT(user_id, category, fact_key) DO UPDATE SET
+                fact_value=excluded.fact_value,
+                source_user_id=excluded.source_user_id,
+                updated_at=excluded.updated_at
+            """,
+            (user_id, category, normalized_key, normalized_value, source_user_id, utc_now().isoformat()),
+        )
+        await db.execute(
+            """
+            DELETE FROM learned_knowledge WHERE user_id=? AND id NOT IN (
+                SELECT id FROM learned_knowledge WHERE user_id=?
+                ORDER BY updated_at DESC, id DESC LIMIT ?
+            )
+            """,
+            (user_id, user_id, 200 if user_id == 0 else 100),
+        )
+        await db.commit()
+
+    async def get_learned_knowledge(self, user_id: int, limit: int = 50) -> list[dict[str, str]]:
+        if user_id <= 0:
+            return []
+        cursor = await self._db().execute(
+            """
+            SELECT category, fact_key, fact_value
+            FROM learned_knowledge
+            WHERE user_id IN (?, 0)
+            ORDER BY CASE WHEN user_id=? THEN 0 ELSE 1 END, updated_at DESC, id DESC
+            LIMIT ?
+            """,
+            (user_id, user_id, max(1, min(limit, 100))),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [
+            {
+                "category": str(row["category"]),
+                "key": str(row["fact_key"]),
+                "value": str(row["fact_value"]),
+            }
+            for row in rows
+        ]
+
     async def forget_memory(self, user_id: int, memory_id: int | None = None) -> int:
         if memory_id is None:
-            cursor = await self._db().execute("DELETE FROM memories WHERE user_id=?", (user_id,))
+            db = self._db()
+            cursor = await db.execute("DELETE FROM memories WHERE user_id=?", (user_id,))
+            facts = await db.execute("DELETE FROM user_memories WHERE user_id=?", (user_id,))
+            learned = await db.execute(
+                "DELETE FROM learned_knowledge WHERE user_id=? OR source_user_id=?",
+                (user_id, user_id),
+            )
+            await db.commit()
+            return cursor.rowcount + facts.rowcount + learned.rowcount
         else:
             cursor = await self._db().execute(
                 "DELETE FROM memories WHERE user_id=? AND id=?", (user_id, memory_id)
@@ -779,6 +1309,30 @@ class Database:
         )
         await db.commit()
         return document_id
+
+    async def document_for_export(self, chat_id: int, document_id: int) -> dict[str, Any] | None:
+        cursor = await self._db().execute(
+            "SELECT filename,mime_type FROM documents WHERE id=? AND chat_id=? AND expires_at>?",
+            (document_id, chat_id, utc_now().isoformat()),
+        )
+        document = await cursor.fetchone()
+        await cursor.close()
+        if document is None:
+            return None
+        cursor = await self._db().execute(
+            "SELECT source,content FROM document_chunks WHERE document_id=? ORDER BY id",
+            (document_id,),
+        )
+        chunks = await cursor.fetchall()
+        await cursor.close()
+        return {
+            "filename": str(document["filename"]),
+            "mime_type": str(document["mime_type"]),
+            "chunks": [
+                {"source": str(row["source"]), "content": str(row["content"])}
+                for row in chunks
+            ],
+        }
 
     async def search_documents(self, chat_id: int, query: str, limit: int = 8) -> list[dict[str, str]]:
         words = [word.strip(".,?!:;()[]{}\"'") for word in query.split() if len(word) > 2]
@@ -1041,10 +1595,550 @@ class Database:
         await cursor.close()
         return [dict(row) for row in rows]
 
+    async def create_mission(
+        self, owner_id: int, chat_id: int, task: str, payload: dict[str, Any],
+        ttl_seconds: int = 30 * 86400,
+    ) -> tuple[str, bool]:
+        if self.cipher is None:
+            raise RuntimeError("Encrypted mission storage is unavailable")
+        normalized = " ".join(task.casefold().split())
+        if owner_id <= 0 or chat_id <= 0 or not normalized or len(task) > 4000:
+            raise ValueError("Mission details are invalid")
+        fingerprint = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        db = self._db()
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = await db.execute(
+                "SELECT id FROM missions WHERE owner_id=? AND task_fingerprint=? "
+                "AND state IN ('planning','running','paused') LIMIT 1",
+                (owner_id, fingerprint),
+            )
+            duplicate = await cursor.fetchone()
+            await cursor.close()
+            if duplicate:
+                await db.commit()
+                return str(duplicate["id"]), False
+            cursor = await db.execute(
+                "SELECT COUNT(*) AS n FROM missions WHERE owner_id=? "
+                "AND state IN ('planning','running','paused')",
+                (owner_id,),
+            )
+            active = await cursor.fetchone()
+            await cursor.close()
+            if int(active["n"]) >= 3:
+                raise ValueError("You already have three active missions")
+            now = utc_now()
+            mission_id = uuid.uuid4().hex[:12].upper()
+            encrypted = self.cipher.encrypt(json.dumps(payload, ensure_ascii=False))
+            await db.execute(
+                "INSERT INTO missions(id,owner_id,chat_id,task_fingerprint,state,payload,created_at,updated_at,expires_at) "
+                "VALUES(?,?,?,?, 'planning', ?,?,?,?)",
+                (mission_id, owner_id, chat_id, fingerprint, encrypted,
+                 now.isoformat(), now.isoformat(), (now + timedelta(seconds=max(60, ttl_seconds))).isoformat()),
+            )
+            await db.commit()
+            await self.audit(owner_id, "mission.create", mission_id, "planning")
+            return mission_id, True
+        except Exception:
+            await db.rollback()
+            raise
+
+    @staticmethod
+    def _mission_row(row: sqlite3.Row, cipher: DataCipher) -> dict[str, Any]:
+        item = dict(row)
+        try:
+            payload = json.loads(cipher.decrypt_text(item.pop("payload")))
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("Stored mission data is unavailable") from exc
+        item["payload"] = payload if isinstance(payload, dict) else {}
+        return item
+
+    async def get_mission(self, mission_id: str, owner_id: int | None = None) -> dict[str, Any] | None:
+        if self.cipher is None:
+            raise RuntimeError("Encrypted mission storage is unavailable")
+        query = "SELECT * FROM missions WHERE id=?"
+        params: tuple[Any, ...] = (mission_id.upper(),)
+        if owner_id is not None:
+            query += " AND owner_id=?"
+            params += (owner_id,)
+        cursor = await self._db().execute(query, params)
+        row = await cursor.fetchone()
+        await cursor.close()
+        if not row:
+            return None
+        item = self._mission_row(row, self.cipher)
+        steps_cursor = await self._db().execute(
+            "SELECT step_index,state,details,result FROM mission_steps WHERE mission_id=? ORDER BY step_index",
+            (mission_id.upper(),),
+        )
+        step_rows = await steps_cursor.fetchall()
+        await steps_cursor.close()
+        if step_rows:
+            details: list[dict[str, Any]] = []
+            states: list[str] = []
+            results: list[dict[str, str] | None] = []
+            for step_row in step_rows:
+                try:
+                    step = json.loads(self.cipher.decrypt_text(step_row["details"]))
+                except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                    raise RuntimeError("Stored mission step is unavailable") from exc
+                step = step if isinstance(step, dict) else {}
+                details.append(step)
+                states.append(str(step_row["state"]))
+                if step_row["result"] is None:
+                    results.append(None)
+                else:
+                    try:
+                        results.append({
+                            "title": str(step.get("title", "Analysis")),
+                            "text": self.cipher.decrypt_text(step_row["result"]),
+                        })
+                    except ValueError as exc:
+                        raise RuntimeError("Stored mission result is unavailable") from exc
+            item["payload"]["steps"] = details
+            item["payload"]["step_states"] = states
+            item["payload"]["results"] = results
+        return item
+
+    async def list_missions(
+        self, owner_id: int | None = None, limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        if self.cipher is None:
+            raise RuntimeError("Encrypted mission storage is unavailable")
+        query = "SELECT * FROM missions"
+        params: tuple[Any, ...] = ()
+        if owner_id is not None:
+            query += " WHERE owner_id=?"
+            params = (owner_id,)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params += (max(1, min(limit, 50)),)
+        cursor = await self._db().execute(query, params)
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [self._mission_row(row, self.cipher) for row in rows]
+
+    async def update_mission(
+        self, mission_id: str, *, expected: set[str], state: str | None = None,
+        payload: dict[str, Any] | None = None, completed_steps: int | None = None,
+        step_count: int | None = None, error_code: str | None = None,
+    ) -> bool:
+        allowed = {
+            "planning": {"running", "paused", "failed", "cancelled", "expired"},
+            "running": {"paused", "completed", "failed", "cancelled", "expired"},
+            "paused": {"running", "cancelled", "expired"},
+            "completed": set(), "failed": set(), "cancelled": set(), "expired": set(),
+        }
+        if not expected or any(item not in allowed for item in expected):
+            raise ValueError("Invalid mission transition source")
+        if state is not None and any(state != current and state not in allowed[current] for current in expected):
+            raise ValueError("Invalid mission state transition")
+        if self.cipher is None:
+            raise RuntimeError("Encrypted mission storage is unavailable")
+        assignments = ["updated_at=?"]
+        values: list[Any] = [utc_now().isoformat()]
+        if state is not None:
+            assignments.append("state=?")
+            values.append(state)
+        if payload is not None:
+            assignments.append("payload=?")
+            values.append(self.cipher.encrypt(json.dumps(payload, ensure_ascii=False)))
+        if completed_steps is not None:
+            assignments.append("completed_steps=?")
+            values.append(max(0, min(completed_steps, 12)))
+        if step_count is not None:
+            assignments.append("step_count=?")
+            values.append(max(0, min(step_count, 12)))
+        if error_code is not None:
+            assignments.append("error_code=?")
+            values.append(error_code[:80])
+        placeholders = ",".join("?" for _ in expected)
+        values.extend([mission_id.upper(), *sorted(expected)])
+        cursor = await self._db().execute(
+            f"UPDATE missions SET {','.join(assignments)} WHERE id=? AND state IN ({placeholders})",
+            values,
+        )
+        changed = cursor.rowcount == 1
+        await cursor.close()
+        await self._db().commit()
+        if changed and state in {"completed", "failed", "cancelled", "expired"}:
+            await self.audit(0, "mission.finish", mission_id.upper(), state)
+        return changed
+
+    async def initialize_mission_steps(self, mission_id: str, steps: list[dict[str, Any]]) -> None:
+        if self.cipher is None:
+            raise RuntimeError("Encrypted mission storage is unavailable")
+        if not 1 <= len(steps) <= 12:
+            raise ValueError("Mission step plan is outside its configured limit")
+        now = utc_now().isoformat()
+        for index, step in enumerate(steps):
+            await self._db().execute(
+                "INSERT OR IGNORE INTO mission_steps(mission_id,step_index,state,details,updated_at) "
+                "VALUES(?,?,'pending',?,?)",
+                (mission_id.upper(), index, self.cipher.encrypt(json.dumps(step, ensure_ascii=False)), now),
+            )
+        await self._db().execute(
+            "UPDATE missions SET step_count=?,updated_at=? WHERE id=?",
+            (len(steps), now, mission_id.upper()),
+        )
+        await self._db().commit()
+
+    async def record_mission_step(
+        self, mission_id: str, step_index: int, result_text: str,
+    ) -> tuple[bool, str, int, int]:
+        """Persist a single completed step without rewriting concurrent sibling results."""
+        if self.cipher is None:
+            raise RuntimeError("Encrypted mission storage is unavailable")
+        db = self._db()
+        cursor = await db.execute(
+            "SELECT state,completed_steps,step_count FROM missions WHERE id=?",
+            (mission_id.upper(),),
+        )
+        mission = await cursor.fetchone()
+        await cursor.close()
+        if not mission:
+            return False, "missing", 0, 0
+        state = str(mission["state"])
+        completed_before, step_count = int(mission["completed_steps"]), int(mission["step_count"])
+        if state not in {"running", "paused"}:
+            return False, state, completed_before, step_count
+        cursor = await db.execute(
+            "SELECT state,details FROM mission_steps WHERE mission_id=? AND step_index=?",
+            (mission_id.upper(), step_index),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        if not row or str(row["state"]) != "pending":
+            return False, state, completed_before, step_count
+        details = json.loads(self.cipher.decrypt_text(row["details"]))
+        dependencies = details.get("depends_on", []) if isinstance(details, dict) else []
+        if not isinstance(dependencies, list):
+            return False, state, completed_before, step_count
+        for dependency in dependencies:
+            if isinstance(dependency, bool) or not isinstance(dependency, int) or not 0 <= dependency < step_index:
+                return False, state, completed_before, step_count
+            cursor = await db.execute(
+                "SELECT state FROM mission_steps WHERE mission_id=? AND step_index=?",
+                (mission_id.upper(), dependency),
+            )
+            dependency_row = await cursor.fetchone()
+            await cursor.close()
+            if not dependency_row or str(dependency_row["state"]) != "completed":
+                return False, state, completed_before, step_count
+        now = utc_now().isoformat()
+        cursor = await db.execute(
+            "UPDATE mission_steps SET state='completed',result=?,updated_at=? "
+            "WHERE mission_id=? AND step_index=? AND state='pending' AND EXISTS ("
+            "SELECT 1 FROM missions WHERE id=? AND state IN ('running','paused'))",
+            (self.cipher.encrypt(result_text[:8000]), now, mission_id.upper(), step_index, mission_id.upper()),
+        )
+        changed = cursor.rowcount == 1
+        await cursor.close()
+        if not changed:
+            await db.commit()
+            return False, state, completed_before, step_count
+        await db.commit()
+        await db.execute(
+            "UPDATE missions SET completed_steps=(SELECT COUNT(*) FROM mission_steps "
+            "WHERE mission_id=? AND state='completed'),updated_at=? WHERE id=?",
+            (mission_id.upper(), utc_now().isoformat(), mission_id.upper()),
+        )
+        await db.commit()
+        cursor = await db.execute(
+            "SELECT completed_steps FROM missions WHERE id=?", (mission_id.upper(),),
+        )
+        count_row = await cursor.fetchone()
+        await cursor.close()
+        completed = int(count_row["completed_steps"]) if count_row else completed_before
+        return True, state, completed, step_count
+
+    async def recover_missions_after_restart(self) -> int:
+        now = utc_now().isoformat()
+        cursor = await self._db().execute(
+            "UPDATE missions SET state='paused',updated_at=? WHERE state IN ('planning','running')",
+            (now,),
+        )
+        count = cursor.rowcount
+        await cursor.close()
+        await self._db().commit()
+        if count:
+            await self.audit(0, "mission.recovery", "active", f"paused:{count}")
+        return count
+
+    async def expire_missions(self) -> int:
+        now = utc_now().isoformat()
+        expired = await self._db().execute_fetchall(
+            "SELECT id FROM missions WHERE state!='expired' AND expires_at<=?", (now,),
+        )
+        for row in expired:
+            await self._db().execute("DELETE FROM mission_steps WHERE mission_id=?", (str(row["id"]),))
+        cursor = await self._db().execute(
+            "UPDATE missions SET state='expired',payload=?,updated_at=? "
+            "WHERE state!='expired' AND expires_at<=?",
+            (self.cipher.encrypt("{}") if self.cipher else b"{}", now, now),
+        )
+        count = cursor.rowcount
+        await cursor.close()
+        await self._db().commit()
+        return count
+
+    async def cleanup_mission_history(self, retention_days: int = 90) -> int:
+        cutoff = (utc_now() - timedelta(days=max(30, min(retention_days, 3650)))).isoformat()
+        cursor = await self._db().execute(
+            "DELETE FROM missions WHERE state IN ('completed','failed','cancelled','expired') AND updated_at<?",
+            (cutoff,),
+        )
+        count = cursor.rowcount
+        await cursor.close()
+        await self._db().commit()
+        return count
+
+    async def delete_mission(self, mission_id: str, owner_id: int) -> bool:
+        cursor = await self._db().execute(
+            "DELETE FROM missions WHERE id=? AND owner_id=?",
+            (mission_id.upper(), owner_id),
+        )
+        changed = cursor.rowcount == 1
+        await cursor.close()
+        await self._db().commit()
+        if changed:
+            await self.audit(owner_id, "mission.delete", mission_id.upper(), "owner request")
+        return changed
+
+    async def create_evolution_proposal(
+        self, creator_id: int, summary: str, patch: bytes, archive: bytes, *,
+        ttl_seconds: int = 7 * 86400,
+    ) -> int:
+        if self.cipher is None:
+            raise RuntimeError("Encrypted evolution storage is unavailable")
+        if (
+            creator_id <= 0 or not summary.strip() or len(summary) > 500
+            or not patch or len(patch) > 1_000_000 or not archive or len(archive) > 20 * 1024 * 1024
+        ):
+            raise ValueError("Evolution proposal details are invalid")
+        patch_hash = hashlib.sha256(patch).hexdigest()
+        source_hash = hashlib.sha256(archive).hexdigest()
+        payload = json.dumps({
+            "patch": base64.b64encode(patch).decode("ascii"),
+            "archive": base64.b64encode(archive).decode("ascii"),
+            "summary": " ".join(summary.split())[:500],
+        }, separators=(",", ":"))
+        now = utc_now()
+        db = self._db()
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = await db.execute(
+                "SELECT COUNT(*) AS n FROM evolution_proposals WHERE expires_at>? "
+                "AND state IN ('testing','awaiting_approval','approved_staging','staging_verified',"
+                "'awaiting_deployment_approval','deployment_approved')",
+                (now.isoformat(),),
+            )
+            total = await cursor.fetchone()
+            await cursor.close()
+            cursor = await db.execute(
+                "SELECT COUNT(*) AS n FROM evolution_proposals WHERE creator_id=? AND expires_at>? "
+                "AND state IN ('testing','awaiting_approval','approved_staging','staging_verified',"
+                "'awaiting_deployment_approval','deployment_approved')",
+                (creator_id, now.isoformat()),
+            )
+            personal = await cursor.fetchone()
+            await cursor.close()
+            if int(total["n"]) >= 10 or int(personal["n"]) >= 3:
+                raise ValueError("Evolution proposal retention limit reached")
+            cursor = await db.execute(
+                "INSERT INTO evolution_proposals(creator_id,summary,patch_hash,source_hash,payload,state,created_at,updated_at,expires_at) "
+                "VALUES(?,?,?,?,?,'testing',?,?,?)",
+                (creator_id, "AI-generated code change proposal", patch_hash, source_hash, self.cipher.encrypt(payload),
+                 now.isoformat(), now.isoformat(), (now + timedelta(seconds=max(60, ttl_seconds))).isoformat()),
+            )
+            proposal_id = int(cursor.lastrowid or 0)
+            await cursor.close()
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+        await self.audit(creator_id, "evolution.create", str(proposal_id), patch_hash[:16])
+        return proposal_id
+
+    async def get_evolution_proposal(self, proposal_id: int) -> dict[str, Any] | None:
+        cursor = await self._db().execute(
+            "SELECT * FROM evolution_proposals WHERE id=?", (proposal_id,),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        if not row:
+            return None
+        item = dict(row)
+        if self.cipher is None:
+            raise RuntimeError("Encrypted evolution storage is unavailable")
+        payload = json.loads(self.cipher.decrypt_text(item["payload"]))
+        item["payload"] = payload if isinstance(payload, dict) else {}
+        item["summary"] = str(item["payload"].get("summary", item.get("summary", "")))
+        if item.get("test_report") is not None:
+            item["test_report"] = self.cipher.decrypt_text(item["test_report"])
+        return item
+
+    async def list_evolution_proposals(
+        self, limit: int = 20, *, pending_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        where = "WHERE state IN ('testing','awaiting_approval','approved_staging','staging_verified','awaiting_deployment_approval','deployment_approved')" if pending_only else ""
+        cursor = await self._db().execute(
+            "SELECT id,creator_id,summary,patch_hash,source_hash,state,test_passed,test_exit_code,test_timed_out,"
+            "reviewed_hash,approver_id,approved_at,deploy_approver_id,deploy_approved_at,created_at,updated_at,expires_at "
+            f"FROM evolution_proposals {where} ORDER BY id DESC LIMIT ?",
+            (max(1, min(limit, 50)),),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+    async def record_evolution_test(
+        self, proposal_id: int, patch_hash: str, report: str, exit_code: int, timed_out: bool,
+    ) -> bool:
+        if self.cipher is None:
+            raise RuntimeError("Encrypted evolution storage is unavailable")
+        passed = exit_code == 0 and not timed_out
+        state = "awaiting_approval" if passed else "failed"
+        cursor = await self._db().execute(
+            "UPDATE evolution_proposals SET state=?,test_passed=?,test_report=?,test_exit_code=?,"
+            "test_timed_out=?,updated_at=? WHERE id=? AND state='testing' AND patch_hash=? AND expires_at>?",
+            (state, int(passed), self.cipher.encrypt(report[:24000]), exit_code, int(timed_out),
+             utc_now().isoformat(), proposal_id, patch_hash, utc_now().isoformat()),
+        )
+        changed = cursor.rowcount == 1
+        await cursor.close()
+        await self._db().commit()
+        if changed:
+            await self.audit(0, "evolution.test", str(proposal_id), "passed" if passed else "failed")
+        return changed
+
+    async def decide_evolution_staging(
+        self, proposal_id: int, patch_hash: str, approver_id: int,
+        admin_ids: frozenset[int], *, approve: bool,
+    ) -> bool:
+        if approver_id not in admin_ids:
+            return False
+        now = utc_now().isoformat()
+        if approve:
+            sql = (
+                "UPDATE evolution_proposals SET state='approved_staging',reviewed_hash=?,approver_id=?,"
+                "approved_at=?,updated_at=? WHERE id=? AND state='awaiting_approval' AND test_passed=1 "
+                "AND patch_hash=? AND expires_at>?"
+            )
+            params: tuple[Any, ...] = (patch_hash, approver_id, now, now, proposal_id, patch_hash, now)
+        else:
+            sql = (
+                "UPDATE evolution_proposals SET state='rejected',summary='',reviewed_hash=?,approver_id=?,"
+                "approved_at=?,payload=?,test_report=NULL,updated_at=? WHERE id=? AND state IN ('testing','awaiting_approval') "
+                "AND patch_hash=? AND expires_at>?"
+            )
+            params = (patch_hash, approver_id, now, self.cipher.encrypt("{}") if self.cipher else b"{}",
+                      now, proposal_id, patch_hash, now)
+        cursor = await self._db().execute(sql, params)
+        changed = cursor.rowcount == 1
+        await cursor.close()
+        await self._db().commit()
+        if changed:
+            await self.audit(approver_id, "evolution.stage_decision", str(proposal_id), "approved" if approve else "rejected")
+        return changed
+
+    async def record_evolution_staging_verification(
+        self, proposal_id: int, patch_hash: str, approver_id: int, admin_ids: frozenset[int],
+        report: str, exit_code: int, timed_out: bool,
+    ) -> bool:
+        if approver_id not in admin_ids or self.cipher is None:
+            return False
+        passed = exit_code == 0 and not timed_out
+        state = "awaiting_deployment_approval" if passed else "failed"
+        cursor = await self._db().execute(
+            "UPDATE evolution_proposals SET state=?,test_report=?,test_exit_code=?,test_timed_out=?,updated_at=? "
+            "WHERE id=? AND state='approved_staging' AND reviewed_hash=? AND patch_hash=? AND expires_at>?",
+            (state, self.cipher.encrypt(report[:24000]), exit_code, int(timed_out), utc_now().isoformat(),
+             proposal_id, patch_hash, patch_hash, utc_now().isoformat()),
+        )
+        changed = cursor.rowcount == 1
+        await cursor.close()
+        await self._db().commit()
+        if changed:
+            await self.audit(approver_id, "evolution.staging_verify", str(proposal_id), "passed" if passed else "failed")
+        return changed
+
+    async def approve_evolution_deployment(
+        self, proposal_id: int, patch_hash: str, approver_id: int, admin_ids: frozenset[int],
+    ) -> bool:
+        if approver_id not in admin_ids:
+            return False
+        now = utc_now().isoformat()
+        cursor = await self._db().execute(
+            "UPDATE evolution_proposals SET state='deployment_approved',deploy_approver_id=?,"
+            "deploy_approved_at=?,updated_at=? WHERE id=? AND state='awaiting_deployment_approval' "
+            "AND reviewed_hash=? AND patch_hash=? AND expires_at>?",
+            (approver_id, now, now, proposal_id, patch_hash, patch_hash, now),
+        )
+        changed = cursor.rowcount == 1
+        await cursor.close()
+        await self._db().commit()
+        if changed:
+            await self.audit(approver_id, "evolution.deploy_approval", str(proposal_id), patch_hash[:16])
+        return changed
+
+    async def cancel_evolution_proposal(
+        self, proposal_id: int, patch_hash: str, actor_id: int, admin_ids: frozenset[int],
+    ) -> bool:
+        if actor_id not in admin_ids or self.cipher is None:
+            return False
+        now = utc_now().isoformat()
+        cursor = await self._db().execute(
+            "UPDATE evolution_proposals SET state='cancelled',summary='',payload=?,test_report=NULL,updated_at=? "
+            "WHERE id=? AND patch_hash=? AND state IN ('testing','awaiting_approval','approved_staging',"
+            "'staging_verified','awaiting_deployment_approval','deployment_approved') AND expires_at>?",
+            (self.cipher.encrypt("{}"), now, proposal_id, patch_hash, now),
+        )
+        changed = cursor.rowcount == 1
+        await cursor.close()
+        await self._db().commit()
+        if changed:
+            await self.audit(actor_id, "evolution.cancel", str(proposal_id), patch_hash[:16])
+        return changed
+
+    async def expire_evolution_proposals(self) -> int:
+        now = utc_now().isoformat()
+        cursor = await self._db().execute(
+            "UPDATE evolution_proposals SET state='expired',summary='',payload=?,test_report=NULL,updated_at=? "
+            "WHERE state IN ('testing','awaiting_approval','approved_staging','staging_verified',"
+            "'awaiting_deployment_approval','deployment_approved') AND expires_at<=?",
+            (self.cipher.encrypt("{}") if self.cipher else b"{}", now, now),
+        )
+        count = cursor.rowcount
+        await cursor.close()
+        await self._db().commit()
+        return count
+
+    async def cleanup_evolution_history(self, retention_days: int = 90) -> int:
+        cutoff = (utc_now() - timedelta(days=max(30, min(retention_days, 3650)))).isoformat()
+        cursor = await self._db().execute(
+            "DELETE FROM evolution_proposals WHERE state IN ('rejected','cancelled','expired','failed',"
+            "'deployment_approved','deployed','rolled_back') AND updated_at<?",
+            (cutoff,),
+        )
+        count = cursor.rowcount
+        await cursor.close()
+        await self._db().commit()
+        return count
+
     async def record_feedback(self, user_id: int, rating: int, category: str = "") -> None:
         if rating not in {-1, 1}:
             raise ValueError("Feedback rating must be -1 or 1")
-        category = " ".join("".join(char for char in category if char.isprintable()).split())[:40]
+        normalized = " ".join("".join(char for char in category if char.isprintable()).split()).casefold()
+        aliases = {
+            "accuracy": "accuracy", "wrong answer": "accuracy", "incorrect": "accuracy",
+            "language": "language", "translation": "language", "roman bangla": "language",
+            "code": "code", "coding": "code", "bug": "code",
+            "provider": "provider", "api": "provider", "fallback": "provider",
+            "latency": "latency", "slow": "latency",
+            "format": "format", "formatting": "format",
+            "tool": "tool", "privacy": "privacy", "other": "other",
+        }
+        category = aliases.get(normalized, "other" if normalized else "")
         await self._db().execute(
             "INSERT INTO feedback(user_id,rating,category,created_at) VALUES(?,?,?,?)",
             (user_id, rating, category[:40], utc_now().isoformat()),
@@ -1156,6 +2250,182 @@ class Database:
         rows = await cursor.fetchall()
         await cursor.close()
         return [dict(row) for row in rows]
+
+    async def save_sticker(
+        self, *, file_id: str, file_unique_id: str | None, emoji: str = "",
+        set_name: str = "", set_title: str = "", sticker_type: str = "regular",
+        is_animated: bool = False, is_video: bool = False, width: int = 0,
+        height: int = 0, category: str = "general", tags: list[str] | None = None,
+        source_type: str = "manual", added_by: int = 0, approved: bool = False,
+    ) -> bool:
+        if not file_id.strip() or not category.strip():
+            raise ValueError("Sticker file ID and category are required")
+        file_unique_id = file_unique_id.strip() or None if file_unique_id else None
+        now = utc_now().isoformat()
+        async with self._sticker_lock:
+            db = self._db()
+            cursor = await db.execute(
+                "SELECT 1 FROM sticker_registry WHERE "
+                "(? IS NOT NULL AND file_unique_id=?) OR file_id=? LIMIT 1",
+                (file_unique_id, file_unique_id, file_id),
+            )
+            duplicate = await cursor.fetchone()
+            await cursor.close()
+            if duplicate:
+                return False
+            cursor = await db.execute(
+                """
+                INSERT OR IGNORE INTO sticker_registry(
+                    file_id,file_unique_id,category,emoji,label,added_by,added_at,
+                    set_name,set_title,sticker_type,is_animated,is_video,width,height,
+                    tags,source_type,approved,created_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    file_id.strip(), file_unique_id, category.strip()[:40], emoji[:32],
+                    set_title[:120] or set_name[:120], added_by, now, set_name[:120],
+                    set_title[:120], sticker_type[:40], int(is_animated), int(is_video),
+                    max(0, int(width)), max(0, int(height)),
+                    json.dumps(_normalize_sticker_tags(tags), ensure_ascii=False),
+                    source_type[:24], int(approved), now,
+                ),
+            )
+            inserted = cursor.rowcount == 1
+            await cursor.close()
+            await db.commit()
+            return inserted
+
+    async def list_stickers(
+        self, category: str | None = None, *, approved_only: bool = False,
+        pending_only: bool = False, limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if category:
+            clauses.append("category=?")
+            params.append(category)
+        if approved_only:
+            clauses.extend(["approved=1", "send_failures<3"])
+        if pending_only:
+            clauses.append("approved=0")
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        cursor = await self._db().execute(
+            "SELECT * FROM sticker_registry" + where + " ORDER BY id DESC LIMIT ?",
+            (*params, max(1, min(limit, 2000))),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [_sticker_row(row) for row in rows]
+
+    async def search_stickers(
+        self, query: str, *, approved_only: bool = False, limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        match = f"%{escaped}%"
+        matches = [
+            "category LIKE ? ESCAPE '\\'",
+            "emoji LIKE ? ESCAPE '\\'",
+            "set_name LIKE ? ESCAPE '\\'",
+            "set_title LIKE ? ESCAPE '\\'",
+            "label LIKE ? ESCAPE '\\'",
+            "tags LIKE ? ESCAPE '\\'",
+        ]
+        params: list[Any] = [match] * len(matches)
+        if query:
+            matches.extend(["file_unique_id=?", "file_id=?"])
+            params.extend([query, query])
+        clauses = ["(" + " OR ".join(matches) + ")"]
+        if approved_only:
+            clauses.extend(["approved=1", "send_failures<3"])
+        cursor = await self._db().execute(
+            "SELECT * FROM sticker_registry WHERE " + " AND ".join(clauses) +
+            " ORDER BY usage_count DESC,id DESC LIMIT ?",
+            (*params, max(1, min(limit, 200))),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [_sticker_row(row) for row in rows]
+
+    async def update_sticker_category(
+        self, sticker_id: int, category: str, tags: list[str] | None = None,
+    ) -> bool:
+        if not category.strip():
+            raise ValueError("Sticker category is required")
+        cursor = await self._db().execute(
+            "UPDATE sticker_registry SET category=?,tags=?,approved=1 WHERE id=?",
+            (
+                category.strip()[:40],
+                json.dumps(_normalize_sticker_tags(tags), ensure_ascii=False),
+                sticker_id,
+            ),
+        )
+        changed = cursor.rowcount == 1
+        await cursor.close()
+        await self._db().commit()
+        return changed
+
+    async def sticker_stats(self) -> dict[str, int]:
+        cursor = await self._db().execute(
+            "SELECT COUNT(*) AS total,COALESCE(SUM(approved),0) AS approved,"
+            "SUM(CASE WHEN approved=0 THEN 1 ELSE 0 END) AS pending,"
+            "SUM(CASE WHEN is_animated=1 THEN 1 ELSE 0 END) AS animated,"
+            "SUM(CASE WHEN is_video=1 THEN 1 ELSE 0 END) AS video,"
+            "COALESCE(SUM(usage_count),0) AS usage_count FROM sticker_registry",
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        result = {key: int(row[key] or 0) for key in (
+            "total", "approved", "pending", "animated", "video", "usage_count",
+        )}
+        cursor = await self._db().execute(
+            "SELECT COUNT(DISTINCT set_name) AS packs FROM sticker_registry WHERE set_name<>''",
+        )
+        packs = await cursor.fetchone()
+        await cursor.close()
+        result["packs"] = int(packs["packs"])
+        return result
+
+    async def record_sticker_usage(self, sticker_id: int, user_id: int | None = None) -> None:
+        db = self._db()
+        now = utc_now().isoformat()
+        await db.execute(
+            "UPDATE sticker_registry SET usage_count=usage_count+1,last_used_at=? WHERE id=?",
+            (now, sticker_id),
+        )
+        if user_id is not None:
+            await db.execute(
+                "INSERT INTO sticker_user_usage(user_id,sticker_id,last_used_at) VALUES(?,?,?) "
+                "ON CONFLICT(user_id) DO UPDATE SET sticker_id=excluded.sticker_id,"
+                "last_used_at=excluded.last_used_at",
+                (user_id, sticker_id, now),
+            )
+        await db.commit()
+
+    async def last_user_sticker_use(self, user_id: int) -> str | None:
+        cursor = await self._db().execute(
+            "SELECT last_used_at FROM sticker_user_usage WHERE user_id=?",
+            (user_id,),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        return str(row["last_used_at"]) if row else None
+
+    async def record_sticker_send_failure(self, sticker_id: int) -> None:
+        await self._db().execute(
+            "UPDATE sticker_registry SET send_failures=send_failures+1 WHERE id=?",
+            (sticker_id,),
+        )
+        await self._db().commit()
+
+    async def export_sticker_metadata(self) -> list[dict[str, Any]]:
+        cursor = await self._db().execute(
+            "SELECT id,file_id,file_unique_id,emoji,set_name,set_title,sticker_type,"
+            "is_animated,is_video,width,height,category,tags,source_type,approved,"
+            "usage_count,created_at,last_used_at FROM sticker_registry ORDER BY id",
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [_sticker_row(row) for row in rows]
 
     async def cleanup_documents(self) -> int:
         cursor = await self._db().execute("DELETE FROM documents WHERE expires_at<=?", (utc_now().isoformat(),))
@@ -1291,7 +2561,11 @@ class Database:
 
     async def add_task(
         self, user_id: int, text: str, priority: str = "normal", due_at: str | None = None,
+        depends_on: list[int] | None = None,
     ) -> int:
+        text = text.strip()
+        if user_id <= 0 or not text or len(text) > 500:
+            raise ValueError("Task text must contain 1-500 characters")
         if priority not in {"low", "normal", "high", "urgent"}:
             raise ValueError("Invalid task priority")
         if due_at is not None:
@@ -1299,26 +2573,127 @@ class Database:
                 date.fromisoformat(due_at)
             except ValueError as exc:
                 raise ValueError("Task deadline must be an ISO date") from exc
-        cursor = await self._db().execute(
-            "SELECT COUNT(*) AS n FROM user_tasks WHERE user_id=? AND status='open'",
-            (user_id,),
-        )
-        current = await cursor.fetchone()
-        await cursor.close()
-        if int(current["n"]) >= 100:
-            raise ValueError("Open task limit reached")
-        now = utc_now().isoformat()
-        cursor = await self._db().execute(
-            "INSERT INTO user_tasks(user_id,task_text,priority,due_at,created_at,updated_at) "
-            "VALUES(?,?,?,?,?,?)",
-            (user_id, text[:500], priority, due_at, now, now),
-        )
-        await self._db().commit()
-        return int(cursor.lastrowid or 0)
+        dependencies = list(dict.fromkeys(depends_on or []))
+        if len(dependencies) > 10 or any(
+            isinstance(task_id, bool) or not isinstance(task_id, int) or task_id <= 0
+            for task_id in dependencies
+        ):
+            raise ValueError("A task may depend on at most 10 valid task IDs")
+
+        db = self._db()
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = await db.execute(
+                "SELECT COUNT(*) AS n FROM user_tasks WHERE user_id=? AND status='open'",
+                (user_id,),
+            )
+            current = await cursor.fetchone()
+            await cursor.close()
+            if int(current["n"]) >= 100:
+                raise ValueError("Open task limit reached")
+
+            if dependencies:
+                placeholders = ",".join("?" for _ in dependencies)
+                cursor = await db.execute(
+                    f"SELECT id FROM user_tasks WHERE user_id=? AND id IN ({placeholders})",
+                    (user_id, *dependencies),
+                )
+                found = {int(row["id"]) for row in await cursor.fetchall()}
+                await cursor.close()
+                if found != set(dependencies):
+                    raise ValueError("Every prerequisite must be an existing task owned by you")
+
+            now = utc_now().isoformat()
+            cursor = await db.execute(
+                "INSERT INTO user_tasks(user_id,task_text,priority,due_at,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (user_id, text, priority, due_at, now, now),
+            )
+            task_id = int(cursor.lastrowid or 0)
+            await cursor.close()
+            await db.executemany(
+                "INSERT INTO task_dependencies(task_id,depends_on_task_id) VALUES(?,?)",
+                [(task_id, dependency_id) for dependency_id in dependencies],
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+        return task_id
+
+    async def add_task_plan(self, user_id: int, steps: list[dict[str, Any]]) -> list[int]:
+        if user_id <= 0 or not isinstance(steps, list) or not 1 <= len(steps) <= 10:
+            raise ValueError("A task plan must contain 1-10 steps")
+        validated: list[tuple[str, str, str | None, list[int]]] = []
+        for index, step in enumerate(steps, start=1):
+            if not isinstance(step, dict):
+                raise ValueError("Every task plan step must be an object")
+            text = step.get("text")
+            priority = step.get("priority", "normal")
+            due_at = step.get("due_at")
+            dependencies = step.get("depends_on", [])
+            if not isinstance(text, str) or not text.strip() or len(text.strip()) > 500:
+                raise ValueError("Each task plan step needs 1-500 characters of text")
+            if not isinstance(priority, str) or priority not in {"low", "normal", "high", "urgent"}:
+                raise ValueError("Invalid task plan priority")
+            if due_at is not None:
+                if not isinstance(due_at, str):
+                    raise ValueError("Invalid task plan deadline")
+                try:
+                    date.fromisoformat(due_at)
+                except ValueError as exc:
+                    raise ValueError("Task deadline must be an ISO date") from exc
+            if not isinstance(dependencies, list) or any(
+                isinstance(item, bool) or not isinstance(item, int) or item < 1 or item >= index
+                for item in dependencies
+            ):
+                raise ValueError("Task plan prerequisites must refer to earlier step numbers")
+            validated.append(
+                (text.strip(), priority, due_at, list(dict.fromkeys(dependencies))),
+            )
+
+        db = self._db()
+        await db.execute("BEGIN IMMEDIATE")
+        task_ids: list[int] = []
+        try:
+            cursor = await db.execute(
+                "SELECT COUNT(*) AS n FROM user_tasks WHERE user_id=? AND status='open'",
+                (user_id,),
+            )
+            current = await cursor.fetchone()
+            await cursor.close()
+            if int(current["n"]) + len(validated) > 100:
+                raise ValueError("Open task limit reached")
+            now = utc_now().isoformat()
+            for index, (text, priority, due_at, dependencies) in enumerate(validated, start=1):
+                cursor = await db.execute(
+                    "INSERT INTO user_tasks(user_id,task_text,priority,due_at,created_at,updated_at) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (user_id, text, priority, due_at, now, now),
+                )
+                task_id = int(cursor.lastrowid or 0)
+                await cursor.close()
+                task_ids.append(task_id)
+                await db.executemany(
+                    "INSERT INTO task_dependencies(task_id,depends_on_task_id) VALUES(?,?)",
+                    [(task_id, task_ids[dependency - 1]) for dependency in dependencies],
+                )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+        return task_ids
 
     async def list_tasks(self, user_id: int) -> list[dict[str, Any]]:
         cursor = await self._db().execute(
-            "SELECT id,task_text,status,priority,due_at,created_at,updated_at FROM user_tasks "
+            "SELECT task.id,task.task_text,task.status,task.priority,task.due_at,"
+            "task.created_at,task.updated_at,"
+            "(SELECT GROUP_CONCAT(depends_on_task_id) FROM task_dependencies "
+            "WHERE task_id=task.id) AS dependency_ids,"
+            "(SELECT GROUP_CONCAT(dependency.depends_on_task_id) FROM task_dependencies AS dependency "
+            "JOIN user_tasks AS prerequisite ON prerequisite.id=dependency.depends_on_task_id "
+            "WHERE dependency.task_id=task.id AND prerequisite.status!='done') AS blocked_dependency_ids "
+            "FROM user_tasks AS task "
             "WHERE user_id=? ORDER BY CASE status WHEN 'open' THEN 0 ELSE 1 END,"
             "CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,"
             "CASE WHEN due_at IS NULL THEN 1 ELSE 0 END,due_at,id DESC LIMIT 100",
@@ -1326,12 +2701,28 @@ class Database:
         )
         rows = await cursor.fetchall()
         await cursor.close()
-        return [dict(row) for row in rows]
+        tasks = []
+        for row in rows:
+            task = dict(row)
+            raw_dependencies = task.pop("dependency_ids")
+            task["depends_on"] = (
+                [int(item) for item in raw_dependencies.split(",")] if raw_dependencies else []
+            )
+            raw_blockers = task.pop("blocked_dependency_ids")
+            task["blocked_by"] = (
+                [int(item) for item in raw_blockers.split(",")] if raw_blockers else []
+            )
+            task["blocked_count"] = len(task["blocked_by"])
+            tasks.append(task)
+        return tasks
 
     async def complete_task(self, user_id: int, task_id: int) -> bool:
         cursor = await self._db().execute(
             "UPDATE user_tasks SET status='done',updated_at=? "
-            "WHERE id=? AND user_id=? AND status='open'",
+            "WHERE id=? AND user_id=? AND status='open' AND NOT EXISTS ("
+            "SELECT 1 FROM task_dependencies AS dependency "
+            "JOIN user_tasks AS prerequisite ON prerequisite.id=dependency.depends_on_task_id "
+            "WHERE dependency.task_id=user_tasks.id AND prerequisite.status!='done')",
             (utc_now().isoformat(), task_id, user_id),
         )
         changed = cursor.rowcount == 1
@@ -1340,6 +2731,18 @@ class Database:
         return changed
 
     async def delete_task(self, user_id: int, task_id: int) -> bool:
+        cursor = await self._db().execute(
+            "SELECT 1 FROM user_tasks WHERE id=? AND user_id=? AND EXISTS ("
+            "SELECT 1 FROM task_dependencies AS dependency "
+            "JOIN user_tasks AS dependent ON dependent.id=dependency.task_id "
+            "WHERE dependency.depends_on_task_id=user_tasks.id "
+            "AND dependent.user_id=user_tasks.user_id AND dependent.status='open')",
+            (task_id, user_id),
+        )
+        has_open_dependents = await cursor.fetchone() is not None
+        await cursor.close()
+        if has_open_dependents:
+            raise ValueError("Open tasks depend on this task")
         cursor = await self._db().execute(
             "DELETE FROM user_tasks WHERE id=? AND user_id=?",
             (task_id, user_id),

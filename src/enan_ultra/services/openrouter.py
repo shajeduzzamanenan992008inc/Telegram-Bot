@@ -15,29 +15,35 @@ import httpx
 
 from enan_ultra.config import Settings
 from enan_ultra.models import AssistantResult
-from enan_ultra.services.key_rotation import KeyRotation
+from enan_ultra.services.key_rotation import KeyRotation, provider_state_path
+from enan_ultra.services.provider_errors import (
+    ProviderError, consume_provider_attempt, error_from_response,
+)
 
 logger = logging.getLogger(__name__)
 TokenCallback = Callable[[str], Awaitable[None]]
 
 
-class ProviderError(RuntimeError):
-    def __init__(self, message: str, status_code: int | None = None) -> None:
-        super().__init__(message)
-        self.status_code = status_code
-
-
 class OpenRouter:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.key_rotation = KeyRotation("openrouter", settings.openrouter_keys)
+        self.key_rotation = KeyRotation(
+            "openrouter", settings.openrouter_keys,
+            max_retries_per_key=getattr(settings, "ai_max_retries_per_key", 1),
+            state_path=provider_state_path(settings, "openrouter"),
+            quota_cooldown_seconds=getattr(settings, "ai_circuit_breaker_cooldown", 60),
+        )
         self.client = httpx.AsyncClient(
             base_url=settings.openrouter_base_url,
             headers={
                 "Content-Type": "application/json",
                 "X-OpenRouter-Title": settings.display_name,
             },
-            timeout=httpx.Timeout(connect=10, read=90, write=45, pool=10),
+            timeout=httpx.Timeout(
+                connect=min(10, getattr(settings, "ai_request_timeout", 30)),
+                read=getattr(settings, "ai_request_timeout", 30),
+                write=getattr(settings, "ai_request_timeout", 30), pool=10,
+            ),
             follow_redirects=False,
             limits=httpx.Limits(max_connections=40, max_keepalive_connections=10),
         )
@@ -47,14 +53,14 @@ class OpenRouter:
         original_headers = dict(kwargs.pop("headers", {}) or {})
 
         async def request(key: str | None, _key_index: int) -> httpx.Response:
+            if method.upper() == "POST" and not consume_provider_attempt():
+                raise ProviderError("The per-request provider attempt limit was reached", category="attempt_limit")
             headers = dict(original_headers)
             if key:
                 headers["Authorization"] = f"Bearer {key}"
             response = await self.client.request(method, url, headers=headers, **kwargs)
-            if response.status_code in KeyRotation.RETRYABLE_STATUS_CODES:
-                raise ProviderError(
-                    f"OpenRouter request failed ({response.status_code})", response.status_code,
-                )
+            if response.status_code >= 400:
+                raise error_from_response("OpenRouter", response)
             return response
 
         return await self.key_rotation.run(request)
@@ -66,20 +72,29 @@ class OpenRouter:
         original_headers = dict(kwargs.pop("headers", {}) or {})
 
         async def request(key: str | None, _key_index: int) -> Any:
+            if method.upper() == "POST" and not consume_provider_attempt():
+                raise ProviderError("The per-request provider attempt limit was reached", category="attempt_limit")
             headers = dict(original_headers)
             if key:
                 headers["Authorization"] = f"Bearer {key}"
             async with self.client.stream(method, url, headers=headers, **kwargs) as response:
-                if response.status_code in KeyRotation.RETRYABLE_STATUS_CODES:
-                    raise ProviderError(
-                        f"OpenRouter request failed ({response.status_code})", response.status_code,
-                    )
+                if response.status_code >= 400:
+                    raise error_from_response("OpenRouter", response)
                 return await consume(response)
 
         return await self.key_rotation.run(request)
 
     async def close(self) -> None:
         await self.client.aclose()
+
+    @staticmethod
+    def _stop_provider_fallback(error: Exception) -> bool:
+        return bool(
+            getattr(error, "partial_output", False)
+            or isinstance(error, ProviderError) and error.category in {
+                "invalid_credential", "quota_or_billing", "rate_limited", "attempt_limit",
+            }
+        )
 
     async def models(self, *, input_modality: str | None = None, output_modality: str | None = None) -> list[dict[str, Any]]:
         now = time.monotonic()
@@ -131,6 +146,35 @@ class OpenRouter:
             prices.append(input_tokens * prompt_price + max_tokens * completion_price + image_count * image_price)
         return max(prices, default=0.0)
 
+    async def estimate_model_cost(
+        self, model_id: str, *, input_chars: int, max_tokens: int = 1400,
+        modality: str = "text", image_count: int = 0,
+    ) -> float | None:
+        """Estimate one catalogued model, returning None when price is unknown."""
+        try:
+            records = await self.models(input_modality=modality)
+        except Exception:
+            return None
+        record = next((item for item in records if item.get("id") == model_id), None)
+        if not record:
+            return None
+        pricing = record.get("pricing")
+        if not isinstance(pricing, dict) or not {"prompt", "completion"}.issubset(pricing):
+            return None
+        try:
+            prompt_price = float(pricing["prompt"])
+            completion_price = float(pricing["completion"])
+            image_price = float(pricing.get("image", 0) or 0)
+        except (TypeError, ValueError):
+            return None
+        if not all(
+            math.isfinite(value) and value >= 0
+            for value in (prompt_price, completion_price, image_price)
+        ):
+            return None
+        input_tokens = max(1, input_chars) + image_count * 1200
+        return input_tokens * prompt_price + max_tokens * completion_price + image_count * image_price
+
     async def estimate_transcription_cost(self, audio_bytes: int, max_tokens: int = 1000) -> float:
         try:
             records = await self.models(input_modality="audio")
@@ -150,10 +194,25 @@ class OpenRouter:
         except (TypeError, ValueError):
             return 0.0
 
-    async def _model_chain(self, primary: str | None, modality: str) -> list[str]:
+    async def _model_chain(
+        self, primary: str | None, modality: str, *, routing_preapproved: bool = False,
+    ) -> list[str]:
         candidates = [primary or self.settings.default_model, *self.settings.fallback_models]
         # Preserve order and avoid retrying the same model twice.
         chain = list(dict.fromkeys(model for model in candidates if model))
+        if getattr(self.settings, "ai_free_only", False):
+            allowlist = {
+                item.split("::", 1)[1]
+                for item in getattr(self.settings, "ai_free_model_allowlist", ())
+                if item.casefold().startswith("openrouter::")
+            }
+            if routing_preapproved and primary:
+                # ProviderRouter has already checked this exact model and its cost cap.
+                return [primary]
+            if primary == "openrouter/free" or not primary:
+                chain.extend(sorted(allowlist))
+            chain = [model for model in chain if model in allowlist]
+            return chain[:max(1, int(getattr(self.settings, "ai_max_total_attempts", 5)))]
         if len(chain) <= 1 or modality != "text":
             try:
                 records = await self.models(input_modality=modality)
@@ -186,8 +245,11 @@ class OpenRouter:
         web_search: bool = False,
         on_token: TokenCallback | None = None,
         max_tokens: int = 1400,
+        routing_preapproved: bool = False,
     ) -> AssistantResult:
-        chain = await self._model_chain(primary_model, modality)
+        chain = await self._model_chain(
+            primary_model, modality, routing_preapproved=routing_preapproved,
+        )
         if not chain:
             raise ProviderError("OpenRouter returned no compatible models")
         last_error: Exception | None = None
@@ -206,7 +268,9 @@ class OpenRouter:
                 except ProviderError as exc:
                     if not web_search or not request_tools:
                         raise
-                    if exc.status_code in KeyRotation.RETRYABLE_STATUS_CODES:
+                    if exc.category in {
+                        "invalid_credential", "quota_or_billing", "rate_limited", "attempt_limit",
+                    }:
                         raise
                     # Server-side web search is beta; retry with the ordinary function tools only.
                     without_web = [tool for tool in request_tools if tool.get("type") != "openrouter:web_search"]
@@ -218,13 +282,19 @@ class OpenRouter:
             except (httpx.TimeoutException, httpx.NetworkError, ProviderError) as exc:
                 last_error = exc
                 logger.warning("OpenRouter model attempt %d failed (%s)", index + 1, type(exc).__name__)
-                if isinstance(exc, ProviderError) and exc.status_code in KeyRotation.RETRYABLE_STATUS_CODES:
+                if getattr(exc, "partial_output", False):
+                    raise
+                if isinstance(exc, ProviderError) and exc.category in {
+                    "invalid_credential", "quota_or_billing", "rate_limited", "attempt_limit",
+                }:
                     raise
                 continue
             except Exception as exc:
                 last_error = exc
                 logger.warning("OpenRouter model attempt %d failed (%s)", index + 1, type(exc).__name__)
                 continue
+        if isinstance(last_error, ProviderError):
+            raise last_error
         raise ProviderError(f"All configured models failed: {type(last_error).__name__ if last_error else 'unknown'}")
 
     async def _completion_for_model(
@@ -277,30 +347,40 @@ class OpenRouter:
 
         answer_parts: list[str] = []
         usage: dict[str, Any] = {}
+
         async def consume(response: httpx.Response) -> AssistantResult:
+            nonlocal usage
             if response.status_code >= 400:
                 if response.status_code in {401, 402, 403}:
                     raise ProviderError(f"OpenRouter request rejected ({response.status_code})", response.status_code)
                 raise ProviderError(f"OpenRouter request failed ({response.status_code})", response.status_code)
-            async for line in response.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                raw = line[5:].strip()
-                if not raw or raw == "[DONE]":
-                    continue
-                try:
-                    event = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                usage = event.get("usage") or usage
-                choices = event.get("choices") or []
-                if not choices:
-                    continue
-                delta = choices[0].get("delta") or {}
-                token = delta.get("content")
-                if isinstance(token, str) and token:
-                    answer_parts.append(token)
-                    await on_token(token)
+            try:
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    raw = line[5:].strip()
+                    if not raw or raw == "[DONE]":
+                        continue
+                    try:
+                        event = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    usage = event.get("usage") or usage
+                    choices = event.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta") or {}
+                    token = delta.get("content")
+                    if isinstance(token, str) and token:
+                        answer_parts.append(token)
+                        await on_token(token)
+            except Exception as exc:
+                if answer_parts:
+                    try:
+                        setattr(exc, "partial_output", True)
+                    except Exception:
+                        pass
+                raise
             streamed_text = "".join(answer_parts).strip()
             if not streamed_text:
                 raise ProviderError("OpenRouter stream returned no text")
@@ -331,16 +411,19 @@ class OpenRouter:
             except Exception as exc:
                 last_error = exc
                 logger.warning("STT model attempt %d failed (%s)", index + 1, type(exc).__name__)
-                if isinstance(exc, ProviderError) and exc.status_code in KeyRotation.RETRYABLE_STATUS_CODES:
+                if self._stop_provider_fallback(exc):
                     raise
+        if isinstance(last_error, ProviderError):
+            raise last_error
         raise ProviderError(f"All audio transcription models failed ({type(last_error).__name__ if last_error else 'unknown'})")
 
     async def synthesize(self, text: str, voice: str | None = None) -> bytes:
         models = await self.models(output_modality="audio")
         preferred = self.settings.tts_model
-        if preferred and not any(item.get("id") == preferred for item in models):
-            raise ProviderError("Configured TTS_MODEL does not provide audio output")
-        candidates = self._modality_candidates(models, preferred)
+        available = {str(item.get("id")) for item in models if item.get("id")}
+        if preferred and preferred not in available:
+            logger.warning("Configured TTS_MODEL is not in the audio catalog; using an available model")
+        candidates = self._modality_candidates(models, preferred if preferred in available else None)
         if not candidates:
             raise ProviderError("No OpenRouter speech output model is configured")
         last_error: Exception | None = None
@@ -359,18 +442,37 @@ class OpenRouter:
                         output.extend(part)
                         if len(output) > self.settings.max_upload_bytes:
                             raise ProviderError("Speech output exceeds MAX_UPLOAD_BYTES")
+                    if not output:
+                        raise ProviderError("Speech generation returned an empty audio stream")
                     return bytes(output)
 
-                return await self._stream_request(
-                    "POST", "/audio/speech", consume,
-                    json={"model": model, "input": text[:4000], "voice": voice or self.settings.tts_voice, "response_format": "mp3"},
-                    timeout=httpx.Timeout(connect=10, read=120, write=45, pool=10),
-                )
+                request: dict[str, Any] = {
+                    "model": model, "input": text[:4000], "response_format": "mp3",
+                }
+                selected_voice = voice or self.settings.tts_voice
+                if selected_voice:
+                    request["voice"] = selected_voice
+                try:
+                    return await self._stream_request(
+                        "POST", "/audio/speech", consume, json=request,
+                        timeout=httpx.Timeout(connect=10, read=120, write=45, pool=10),
+                    )
+                except ProviderError as exc:
+                    if "voice" not in request or exc.status_code not in {400, 422}:
+                        raise
+                    request.pop("voice")
+                    logger.info("Retrying TTS model without its provider-specific voice option")
+                    return await self._stream_request(
+                        "POST", "/audio/speech", consume, json=request,
+                        timeout=httpx.Timeout(connect=10, read=120, write=45, pool=10),
+                    )
             except Exception as exc:
                 last_error = exc
                 logger.warning("TTS model attempt %d failed (%s)", index + 1, type(exc).__name__)
-                if isinstance(exc, ProviderError) and exc.status_code in KeyRotation.RETRYABLE_STATUS_CODES:
+                if self._stop_provider_fallback(exc):
                     raise
+        if isinstance(last_error, ProviderError):
+            raise last_error
         raise ProviderError(f"All speech output models failed ({type(last_error).__name__ if last_error else 'unknown'})")
 
     def _modality_candidates(self, records: list[dict[str, Any]], preferred: str | None) -> list[str]:
@@ -383,15 +485,17 @@ class OpenRouter:
         preferred = self.settings.image_model
         available = [str(item.get("id")) for item in items if item.get("id")]
         if preferred and preferred not in available:
-            raise ProviderError("Configured IMAGE_MODEL is not available in the image catalog")
-        candidates = list(dict.fromkeys([preferred, *available]))[:4]
+            logger.warning("Configured IMAGE_MODEL is not in the current image catalog; using an available model")
+        candidates = list(dict.fromkeys(
+            model for model in [preferred, *available] if model and model in available
+        ))[:4]
         if not candidates:
             raise ProviderError("No image generation model is currently available")
         last_error: Exception | None = None
         for index, model in enumerate(candidates):
             try:
                 response = await self._request(
-                    "POST", "/images/generations", json={"model": model, "prompt": prompt[:2000]},
+                    "POST", "/images", json={"model": model, "prompt": prompt[:2000]},
                 )
                 if response.status_code >= 400:
                     raise ProviderError(f"Image generation failed ({response.status_code})", response.status_code)
@@ -403,19 +507,24 @@ class OpenRouter:
                     image_bytes = base64.b64decode(encoded, validate=True)
                     if len(image_bytes) > self.settings.max_image_bytes:
                         raise ProviderError("Generated image exceeds MAX_IMAGE_BYTES")
-                    return image_bytes, None
+                    media_type = str(item.get("media_type") or "image/png").lower()
+                    if media_type not in {"image/jpeg", "image/png", "image/webp"}:
+                        raise ProviderError("Image model returned an unsupported image format")
+                    return image_bytes, media_type
                 url = item.get("url")
                 if not url:
                     raise ProviderError("Image model returned no image")
-                return await self._download_external_image(str(url)), None
+                return await self._download_external_image(str(url))
             except Exception as exc:
                 last_error = exc
                 logger.warning("Image model attempt %d failed (%s)", index + 1, type(exc).__name__)
-                if isinstance(exc, ProviderError) and exc.status_code in KeyRotation.RETRYABLE_STATUS_CODES:
+                if self._stop_provider_fallback(exc):
                     raise
+        if isinstance(last_error, ProviderError):
+            raise last_error
         raise ProviderError(f"All image generation models failed ({type(last_error).__name__ if last_error else 'unknown'})")
 
-    async def _download_external_image(self, url: str) -> bytes:
+    async def _download_external_image(self, url: str) -> tuple[bytes, str]:
         # Never follow redirects or allow local/private network targets.
         from enan_ultra.security import validate_public_https_url
 
@@ -426,12 +535,15 @@ class OpenRouter:
                 image_response.raise_for_status()
                 if not image_response.headers.get("content-type", "").lower().startswith("image/"):
                     raise ProviderError("Image URL did not return an image")
+                media_type = image_response.headers["content-type"].split(";", 1)[0].strip().lower()
+                if media_type not in {"image/jpeg", "image/png", "image/webp"}:
+                    raise ProviderError("Generated image URL returned an unsupported image format")
                 output = bytearray()
                 async for part in image_response.aiter_bytes():
                     output.extend(part)
                     if len(output) > self.settings.max_image_bytes:
                         raise ProviderError("Generated image exceeds MAX_IMAGE_BYTES")
-                return bytes(output)
+                return bytes(output), media_type
 
     async def image_models(self) -> list[dict[str, Any]]:
         response = await self._request("GET", "/images/models")

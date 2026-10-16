@@ -1,14 +1,89 @@
+# Environment files — `.env` holds local secrets and is never committed.
 .env
-.venv/
+.env.*
+!.env.example
+
+# Python cache & compiled files
 __pycache__/
 *.py[cod]
-*.sqlite3*
-*.db
-.ruff_cache/
+*$py.class
 .pytest_cache/
 .coverage
-dist/
+htmlcov/
+.tox/
+
+# Virtual Environments
+.venv/
+venv/
+antenv/
+ENV/
+env/
+
+# Database files (SQLite & backups)
+backups/
+instance/*.sqlite3
+instance/*.db
+instance/datasets/
+instance/*.log
+*.sqlite3
+*.db
+*.db-journal
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# User uploads & temporary media files
+uploads/*
+!uploads/.gitkeep
+app/static/profile-image-test-*/
+app/static/uploads/profiles/*
+!app/static/uploads/profiles/.gitkeep
+app/static/uploads/branding/*
+!app/static/uploads/branding/.gitkeep
+app/static/uploads/products/*
+!app/static/uploads/products/.gitkeep
+
+# Temporary test & scratch debug files
+tmp_*
+tests/tmp_*
+
+# IDE / Editor settings
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS specific files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Packaging & Build outputs
 build/
-uv.lock.tmp
-data/
-tmp/
+dist/
+*.egg-info/
+*.whl
+*.tar.gz
+nexhaat-deploy.zip
+staging/
+coverage.xml
+pytest-report.xml
+*.bak
+*.swp
+
+# Azure / deployment diagnostics
+*.zip
+*.publishsettings
+azure-logs/
+startup.log
+oryx-manifest.toml
+
+# Local tooling state
+.python-version
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.hypothesis/

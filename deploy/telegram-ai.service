@@ -1,12 +1,13 @@
 [Unit]
 Description=Enan Ultra Telegram AI Assistant
-After=network-online.target
-Wants=network-online.target
+After=network-online.target clamav-daemon.service
+Wants=network-online.target clamav-daemon.service
 
 [Service]
 Type=simple
 User=enan-ultra
 Group=enan-ultra
+SupplementaryGroups=clamav
 WorkingDirectory=/opt/enan-ultra
 EnvironmentFile=/etc/telegram-ai/bot.env
 Environment=PYTHONUNBUFFERED=1

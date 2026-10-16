@@ -1,0 +1,10 @@
+{
+  "id": "physics",
+  "label": {"bn": "কোয়ান্টাম ল্যাব", "en": "Quantum Laboratory"},
+  "icon": "⚛️",
+  "colors": {"background": "#0a1524", "surface": "#142b40", "accent": "#83d7ff", "glow": "#557df5", "text": "#f1f8ff"},
+  "animation": "particles",
+  "motion": "low",
+  "contrast": "standard",
+  "detector": {"keywords_en": ["physics", "quantum", "particle", "gravity", "force", "relativity", "motion", "kinematics", "electromagnetism", "wave function", "momentum", "podarthobiggan", "podartho biggan", "physics e", "physics bujhao", "madhyakarshan", "mohakorsho", "goti", "bolbidda", "torongo"], "keywords_bn": ["পদার্থবিজ্ঞান", "কোয়ান্টাম", "কণা", "মাধ্যাকর্ষণ", "বলবিদ্যা", "আপেক্ষিকতা", "গতি", "তড়িৎচুম্বকত্ব", "তরঙ্গ ফাংশন", "ভরবেগ"]}
+}

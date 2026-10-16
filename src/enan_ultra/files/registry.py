@@ -7,6 +7,7 @@ import bz2
 from contextvars import ContextVar
 import gzip
 import io
+import logging
 import lzma
 import mimetypes
 import re
@@ -26,6 +27,8 @@ from pypdf import PdfReader
 from enan_ultra.config import Settings
 from enan_ultra.files.base import FileAdapter
 from enan_ultra.models import ContentChunk, ExtractedContent
+
+logger = logging.getLogger(__name__)
 
 
 TEXT_EXTENSIONS = {
@@ -582,12 +585,30 @@ class FileRegistry:
         try:
             for adapter in self.adapters:
                 try:
-                    if adapter.detect(filename, mime_type, data):
-                        if isinstance(adapter, BaseAdapter):
-                            return await adapter.extract_with_media(filename, mime_type, data, settings, depth)
-                        return await adapter.extract(filename, mime_type, data, settings, depth), ()
-                except Exception:
+                    matched = adapter.detect(filename, mime_type, data)
+                except Exception as exc:
+                    logger.warning(
+                        "File type detection failed for adapter %s (%s)",
+                        adapter.name, type(exc).__name__,
+                    )
                     continue
+                if not matched:
+                    continue
+                try:
+                    if isinstance(adapter, BaseAdapter):
+                        return await adapter.extract_with_media(filename, mime_type, data, settings, depth)
+                    return await adapter.extract(filename, mime_type, data, settings, depth), ()
+                except Exception as exc:
+                    logger.warning(
+                        "File parsing failed for adapter %s (%s)",
+                        adapter.name, type(exc).__name__,
+                    )
+                    return [
+                        ContentChunk(
+                            f"The {adapter.name} parser failed safely ({type(exc).__name__}).",
+                            filename, "warning",
+                        )
+                    ], ()
             if _is_probably_text(data):
                 return _chunk_text(_safe_text(data[: settings.max_input_chars * 8]), filename), ()
             return [], ()
@@ -638,7 +659,8 @@ class FileRegistry:
         warnings = [chunk.text for chunk in chunks if chunk.modality == "warning"]
         readable_chunks = tuple(chunk for chunk in chunks if chunk.modality != "warning")
         if not readable_chunks and not images:
-            warnings.append("No local parser recognized this file. It can be sent to a model with file-input support, if available.")
+            if not warnings:
+                warnings.append("No local parser recognized this file. It can be sent to a model with file-input support, if available.")
         return ExtractedContent(safe_name, detected_mime, readable_chunks, images, tuple(warnings))
 
 

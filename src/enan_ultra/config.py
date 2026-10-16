@@ -50,7 +50,64 @@ def _csv(name: str) -> tuple[str, ...]:
 
 
 def _provider_keys(plural_name: str, singular_name: str) -> tuple[str, ...]:
-    return _csv(plural_name) or tuple(filter(None, (_value(singular_name),)))
+    return _provider_keys_with_aliases(plural_name, singular_name)
+
+
+def _provider_keys_with_aliases(
+    plural_name: str, singular_name: str, aliases: tuple[str, ...] = (),
+) -> tuple[str, ...]:
+    source_name = plural_name
+    raw = _value(plural_name)
+    if not raw:
+        for alias in aliases:
+            raw = _value(alias)
+            if raw:
+                source_name = alias
+                break
+    if raw:
+        parts = raw.split(",")
+        if any(not part.strip() for part in parts):
+            raise ValueError(f"{source_name} contains an empty credential entry")
+        values = [part.strip() for part in parts]
+    else:
+        singular = _value(singular_name)
+        values = [singular] if singular else []
+        source_name = singular_name
+    if any(any(char.isspace() for char in value) for value in values):
+        raise ValueError(f"{source_name} contains malformed credentials")
+    if len(values) > 10:
+        raise ValueError(f"{source_name} supports at most 10 credentials")
+    return tuple(dict.fromkeys(values))
+
+
+_CLOUD_PROVIDER_NAMES = frozenset({"openrouter", "groq", "gemini", "cloudflare", "huggingface"})
+
+
+def _provider_order() -> tuple[str, ...]:
+    raw = _value("AI_PROVIDER_ORDER", "openrouter,groq,gemini,cloudflare,huggingface")
+    parts = [item.strip().casefold() for item in raw.split(",")]
+    if not raw or any(not item for item in parts):
+        raise ValueError("AI_PROVIDER_ORDER must be a comma-separated provider list")
+    if len(set(parts)) != len(parts) or any(item not in _CLOUD_PROVIDER_NAMES for item in parts):
+        raise ValueError("AI_PROVIDER_ORDER may contain each supported cloud provider at most once")
+    return tuple(parts)
+
+
+def _model_allowlist(name: str) -> tuple[str, ...]:
+    raw = _value(name)
+    if not raw:
+        return ()
+    values = [item.strip() for item in raw.split(",")]
+    if any(not item for item in values):
+        raise ValueError(f"{name} contains an empty model entry")
+    for item in values:
+        provider, separator, model = item.partition("::")
+        if (
+            not separator or provider.casefold() not in _CLOUD_PROVIDER_NAMES | {"ollama"}
+            or not model or len(model) > 200 or any(char.isspace() for char in model)
+        ):
+            raise ValueError(f"{name} entries must use provider::model-id format")
+    return tuple(dict.fromkeys(values))
 
 
 def _ids(name: str) -> frozenset[int]:
@@ -79,6 +136,18 @@ class Settings:
     default_model: str
     fallback_models: tuple[str, ...]
     provider_order: tuple[str, ...]
+    ai_request_timeout: float
+    ai_max_retries_per_key: int
+    ai_max_total_attempts: int
+    ai_circuit_breaker_threshold: int
+    ai_circuit_breaker_cooldown: float
+    ai_free_only: bool
+    ai_allow_paid_fallback: bool
+    ai_max_estimated_cost_usd: float
+    ai_free_model_allowlist: tuple[str, ...]
+    ai_tool_capable_models: tuple[str, ...]
+    ai_image_capable_models: tuple[str, ...]
+    ai_streaming_models: tuple[str, ...]
     openai_key: str
     openai_keys: tuple[str, ...]
     openai_base_url: str
@@ -122,6 +191,7 @@ class Settings:
     stt_model: str
     tts_model: str
     tts_voice: str
+    vision_model: str
     image_model: str
     trigger_words: tuple[str, ...]
     database_path: Path
@@ -163,6 +233,8 @@ class Settings:
     sticker_file_ids: tuple[str, ...]
     media_style: str
     admin_alerts: bool
+    malware_scan_enabled: bool
+    clamav_socket_path: Path
     log_level: str
     local_bot_api_base_url: str
     local_bot_api_file_url: str
@@ -170,6 +242,9 @@ class Settings:
     dashboard_host: str
     dashboard_port: int
     dashboard_auth_token: str
+    mini_app_url: str
+    mini_app_host: str
+    mini_app_port: int
     ha_base_url: str
     ha_token: str
     ha_allowed_entities: tuple[str, ...]
@@ -200,7 +275,9 @@ class Settings:
         groq_keys = _provider_keys("GROQ_API_KEYS", "GROQ_API_KEY")
         together_keys = _provider_keys("TOGETHER_API_KEYS", "TOGETHER_API_KEY")
         sambanova_keys = _provider_keys("SAMBANOVA_API_KEYS", "SAMBANOVA_API_KEY")
-        cloudflare_keys = _provider_keys("CLOUDFLARE_API_KEYS", "CLOUDFLARE_API_KEY")
+        cloudflare_keys = _provider_keys_with_aliases(
+            "CLOUDFLARE_API_TOKENS", "CLOUDFLARE_API_KEY", ("CLOUDFLARE_API_KEYS",),
+        )
         huggingface_keys = _provider_keys("HUGGINGFACE_API_KEYS", "HUGGINGFACE_API_KEY")
         api_key = openrouter_keys[0] if openrouter_keys else ""
         openai_key = openai_keys[0] if openai_keys else ""
@@ -235,7 +312,8 @@ class Settings:
         ):
             if any(key.startswith("replace-") for key in keys):
                 raise ValueError(f"{name} must contain real keys or be left blank")
-        provider_order = ("openrouter", "groq", "gemini", "cloudflare", "huggingface")
+        provider_order = _provider_order()
+        default_model = _value("OPENROUTER_MODEL") or _value("DEFAULT_AI_MODEL", "auto")
         cloudflare_base_url = _value("CLOUDFLARE_BASE_URL").rstrip("/")
         if not cloudflare_base_url and cloudflare_account_id:
             cloudflare_base_url = (
@@ -308,9 +386,21 @@ class Settings:
             openrouter_key=api_key,
             openrouter_keys=openrouter_keys,
             openrouter_base_url=_value("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/"),
-            default_model=_value("DEFAULT_AI_MODEL", "openrouter/free"),
+            default_model=default_model,
             fallback_models=_csv("FALLBACK_MODELS"),
             provider_order=provider_order,
+            ai_request_timeout=_float("AI_REQUEST_TIMEOUT", 30, 1),
+            ai_max_retries_per_key=_int("AI_MAX_RETRIES_PER_KEY", 1, 0, 3),
+            ai_max_total_attempts=_int("AI_MAX_TOTAL_ATTEMPTS", 5, 1, 20),
+            ai_circuit_breaker_threshold=_int("AI_CIRCUIT_BREAKER_THRESHOLD", 3, 1, 20),
+            ai_circuit_breaker_cooldown=_float("AI_CIRCUIT_BREAKER_COOLDOWN", 60, 1),
+            ai_free_only=_bool("AI_FREE_ONLY", False),
+            ai_allow_paid_fallback=_bool("AI_ALLOW_PAID_FALLBACK", False),
+            ai_max_estimated_cost_usd=_float("AI_MAX_ESTIMATED_COST_USD", 0, 0),
+            ai_free_model_allowlist=_model_allowlist("AI_FREE_MODEL_ALLOWLIST"),
+            ai_tool_capable_models=_model_allowlist("AI_TOOL_CAPABLE_MODELS"),
+            ai_image_capable_models=_model_allowlist("AI_IMAGE_CAPABLE_MODELS"),
+            ai_streaming_models=_model_allowlist("AI_STREAMING_MODELS"),
             openai_key=openai_key,
             openai_keys=openai_keys,
             openai_base_url=_value("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
@@ -360,6 +450,7 @@ class Settings:
             stt_model=_value("STT_MODEL"),
             tts_model=_value("TTS_MODEL"),
             tts_voice=_value("TTS_VOICE", "alloy"),
+            vision_model=_value("VISION_MODEL", "google/gemini-2.5-flash:free"),
             image_model=_value("IMAGE_MODEL"),
             trigger_words=tuple(word.casefold() for word in _csv("TRIGGER_WORDS")),
             database_path=Path(_value("DATABASE_PATH", "data/telegram_ai.sqlite3")),
@@ -401,6 +492,8 @@ class Settings:
             sticker_file_ids=_csv("STICKER_FILE_IDS"),
             media_style=_value("MEDIA_STYLE", "balanced").lower(),
             admin_alerts=_bool("ADMIN_ALERTS", True),
+            malware_scan_enabled=_bool("MALWARE_SCAN_ENABLED", False),
+            clamav_socket_path=Path(_value("CLAMAV_SOCKET_PATH", "/var/run/clamav/clamd.ctl")),
             log_level=_value("LOG_LEVEL", "INFO").upper(),
             local_bot_api_base_url=_value("LOCAL_BOT_API_BASE_URL"),
             local_bot_api_file_url=_value("LOCAL_BOT_API_FILE_URL"),
@@ -408,6 +501,9 @@ class Settings:
             dashboard_host=_value("DASHBOARD_HOST", "127.0.0.1"),
             dashboard_port=_int("DASHBOARD_PORT", 8787, 1024, 65535),
             dashboard_auth_token=_value("DASHBOARD_AUTH_TOKEN"),
+            mini_app_url=_value("MINI_APP_URL").rstrip("/"),
+            mini_app_host=_value("MINI_APP_HOST", "127.0.0.1"),
+            mini_app_port=_int("MINI_APP_PORT", 8788, 1024, 65535),
             ha_base_url=_value("HA_BASE_URL").rstrip("/"),
             ha_token=_value("HA_TOKEN"),
             ha_allowed_entities=_csv("HA_ALLOWED_ENTITIES"),
@@ -432,8 +528,34 @@ class Settings:
             or settings.dashboard_auth_token.startswith("replace-")
         ):
             raise ValueError("DASHBOARD_AUTH_TOKEN must be a generated secret of at least 32 characters")
+        if settings.ai_request_timeout > 300:
+            raise ValueError("AI_REQUEST_TIMEOUT must be between 1 and 300 seconds")
+        if settings.ai_circuit_breaker_cooldown > 86_400:
+            raise ValueError("AI_CIRCUIT_BREAKER_COOLDOWN must be at most 86400 seconds")
+        if settings.ai_allow_paid_fallback and settings.ai_max_estimated_cost_usd <= 0:
+            raise ValueError(
+                "AI_MAX_ESTIMATED_COST_USD must be positive when AI_ALLOW_PAID_FALLBACK is enabled",
+            )
         if settings.dashboard_host != "127.0.0.1":
             raise ValueError("DASHBOARD_HOST must be 127.0.0.1; access it through an SSH tunnel")
+        if settings.mini_app_host != "127.0.0.1":
+            raise ValueError("MINI_APP_HOST must be 127.0.0.1; publish it through an HTTPS reverse proxy")
+        if settings.mini_app_url:
+            mini_url = urlsplit(settings.mini_app_url)
+            if (
+                mini_url.scheme != "https" or not mini_url.hostname or mini_url.username
+                or mini_url.password or mini_url.path not in {"", "/"}
+                or mini_url.query or mini_url.fragment
+            ):
+                raise ValueError("MINI_APP_URL must be an HTTPS origin with no path, query, or fragment")
+            try:
+                public_port = mini_url.port
+            except ValueError as exc:
+                raise ValueError("MINI_APP_URL contains an invalid HTTPS port") from exc
+            if public_port == 0:
+                raise ValueError("MINI_APP_URL must use a valid HTTPS port")
+            if settings.mini_app_port == settings.dashboard_port:
+                raise ValueError("MINI_APP_PORT and DASHBOARD_PORT must be different")
         if len(settings.app_data_key) < 32 or settings.app_data_key.startswith("replace-"):
             raise ValueError("APP_DATA_KEY must be a generated secret of at least 32 characters")
         if bool(settings.ha_base_url) != bool(settings.ha_token):
@@ -463,6 +585,7 @@ class Settings:
             ("HA_TOKEN", settings.ha_token),
             ("APP_DATA_KEY", settings.app_data_key),
             ("DASHBOARD_AUTH_TOKEN", settings.dashboard_auth_token),
+            ("MINI_APP_URL", settings.mini_app_url),
         ):
             if any(char in value for char in "\r\n"):
                 raise ValueError(f"{name} must be a single-line value")
@@ -507,6 +630,13 @@ class Settings:
                 raise ValueError("Remote OLLAMA_BASE_URL must use HTTPS")
         if settings.media_style not in {"balanced", "minimal", "expressive"}:
             raise ValueError("MEDIA_STYLE must be balanced, minimal, or expressive")
+        if settings.malware_scan_enabled and (
+            not settings.clamav_socket_path.is_absolute()
+            or len(os.fsencode(settings.clamav_socket_path)) > 103
+        ):
+            raise ValueError(
+                "CLAMAV_SOCKET_PATH must be an absolute path that fits the Unix socket path limit"
+            )
         if settings.log_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
             raise ValueError("LOG_LEVEL must be DEBUG, INFO, WARNING, ERROR, or CRITICAL")
         if not settings.local_bot_api_base_url and settings.max_upload_bytes > 20 * 1024 * 1024:

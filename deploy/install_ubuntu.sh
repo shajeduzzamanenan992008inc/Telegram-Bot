@@ -12,7 +12,9 @@ CONFIG_DIR="/etc/telegram-ai"
 CONFIG_FILE="${CONFIG_DIR}/bot.env"
 
 apt-get update
-apt-get install -y ffmpeg poppler-utils tesseract-ocr tesseract-ocr-ben rsync pipx python3 python3-venv
+apt-get install -y clamav clamav-daemon clamav-freshclam ffmpeg poppler-utils tesseract-ocr tesseract-ocr-ben fonts-noto-core rsync pipx python3 python3-venv
+systemctl enable --now clamav-freshclam
+systemctl enable --now clamav-daemon
 if ! id enan-ultra >/dev/null 2>&1; then
   useradd --system --home-dir /var/lib/telegram-ai --shell /usr/sbin/nologin enan-ultra
 fi
@@ -45,6 +47,9 @@ install -m 0644 deploy/telegram-ai.service /etc/systemd/system/telegram-ai.servi
 install -d -m 0700 -o enan-ultra -g enan-ultra /var/lib/telegram-ai
 if [[ ! -f "${CONFIG_FILE}" ]]; then
   install -m 0600 .env.example "${CONFIG_FILE}"
+  sed -i 's/^MALWARE_SCAN_ENABLED=false$/MALWARE_SCAN_ENABLED=true/' "${CONFIG_FILE}"
+elif ! grep -q '^MALWARE_SCAN_ENABLED=' "${CONFIG_FILE}"; then
+  printf '\nMALWARE_SCAN_ENABLED=true\nCLAMAV_SOCKET_PATH=/var/run/clamav/clamd.ctl\n' >> "${CONFIG_FILE}"
 fi
 chown root:root "${CONFIG_FILE}"
 chmod 0600 "${CONFIG_FILE}"

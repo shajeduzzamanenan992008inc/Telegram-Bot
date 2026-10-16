@@ -1,0 +1,10 @@
+{
+  "id": "mathematics",
+  "label": {"bn": "গাণিতিক গ্রিড", "en": "Mathematical Grid"},
+  "icon": "∑",
+  "colors": {"background": "#111427", "surface": "#232747", "accent": "#c0a7ff", "glow": "#7358ca", "text": "#faf7ff"},
+  "animation": "math-grid",
+  "motion": "low",
+  "contrast": "standard",
+  "detector": {"keywords_en": ["mathematics", "math", "equation", "calculus", "algebra", "derivative", "integral", "geometry", "proof", "matrix", "probability", "statistics", "gonit", "shomikoron", "shomikaron", "bijgonit", "bijganit", "jyamiti", "probability bujhao"], "keywords_bn": ["গণিত", "সমীকরণ", "ক্যালকুলাস", "বীজগণিত", "অন্তরকলন", "সমাকলন", "জ্যামিতি", "প্রমাণ", "ম্যাট্রিক্স", "সম্ভাবনা", "পরিসংখ্যান"]}
+}

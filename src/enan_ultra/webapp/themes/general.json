@@ -1,0 +1,10 @@
+{
+  "id": "general",
+  "label": {"bn": "অরোরা", "en": "Adaptive Aurora"},
+  "icon": "✨",
+  "colors": {"background": "#091421", "surface": "#142435", "accent": "#74e4dc", "glow": "#507bf3", "text": "#f2f8ff"},
+  "animation": "aurora",
+  "motion": "low",
+  "contrast": "standard",
+  "detector": {"keywords_en": [], "keywords_bn": []}
+}

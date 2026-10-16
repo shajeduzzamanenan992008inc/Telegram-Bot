@@ -1,0 +1,9 @@
+# Document processing
+
+`FileRegistry` selects a parser based on signatures, MIME hints and supported extensions. Existing adapters cover text/code/config formats, PDF, DOCX, XLSX, PPTX, EPUB, images and bounded text extraction from supported archives. Image/OCR support depends on installed local libraries/binaries; scanned PDF OCR is attempted only when Poppler and Tesseract are available. Audio/video use the separate bounded media pipeline.
+
+Uploads are constrained by `MAX_UPLOAD_BYTES`, document pages/input character limits, archive member/depth/expanded-byte limits, image pixel/byte limits, and video/audio duration/frame limits. The application does not execute uploaded code or embedded commands. Extracted chunks carry page/slide/sheet/line or archive source labels when the parser can identify them.
+
+Parsed document excerpts may be attached to the current AI request and temporary text indexes are retained for `DOCUMENT_RETENTION_HOURS`, unless private Temporary Chat is active. `/document` explains supported input and report commands; `/document files` or `/files` lists current chat indexes and `/document forget` or `/forget_files` deletes them. In private chats, `/export file ID md|txt` downloads a bounded report from the indexed extraction, retaining available page/line/slide/sheet source labels. Expired and other-chat IDs cannot be exported. Explicitly retained personal documents are separate; see [Knowledge Base](./KNOWLEDGE_BASE.md). Unsupported, corrupt, encrypted or empty files are reported rather than fabricated as successfully read. Remote provider file fallback is optional and subject to privacy, capability, budget and cleanup behavior.
+
+See [multimodal architecture](./MULTIMODAL_ARCHITECTURE.md), [configuration](./CONFIGURATION.md), and [privacy/retention](./PRIVACY_AND_FILE_RETENTION.md).

@@ -1,0 +1,10 @@
+{
+  "id": "education",
+  "label": {"bn": "লার্নিং স্পেস", "en": "Learning Space"},
+  "icon": "📚",
+  "colors": {"background": "#111827", "surface": "#1e2a3a", "accent": "#ffd27d", "glow": "#ee9a60", "text": "#fffaf1"},
+  "animation": "paper-lines",
+  "motion": "low",
+  "contrast": "standard",
+  "detector": {"keywords_en": ["education", "homework", "study", "exam", "learning", "school", "university", "lesson", "course", "teach me", "explain this concept", "porashona", "porashuna", "exam er jonno", "shikhte chai", "bujhiye bolo"], "keywords_bn": ["শিক্ষা", "বাড়ির কাজ", "পড়াশোনা", "পরীক্ষা", "শেখা", "বিদ্যালয়", "বিশ্ববিদ্যালয়", "পাঠ", "কোর্স", "শিখিয়ে দাও", "ধারণাটি বুঝিয়ে"]}
+}

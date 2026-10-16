@@ -5,23 +5,30 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import sqlite3
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
-from telegram import BotCommand, BotCommandScopeChat
-from telegram.ext import Application, ApplicationBuilder, ContextTypes
+from telegram import BotCommand, BotCommandScopeChat, MenuButtonWebApp, WebAppInfo
+from telegram.ext import (
+    Application, ApplicationBuilder, ContextTypes, InlineQueryHandler, MessageHandler, filters,
+)
 
 from enan_ultra.actions import ActionRegistry
 from enan_ultra.config import Settings
 from enan_ultra.dashboard import AdminDashboard
 from enan_ultra.files.registry import FileRegistry
 from enan_ultra.handlers import BotHandlers
+from enan_ultra.mini_app import MiniAppServer
 from enan_ultra.services.media import MediaProcessor
 from enan_ultra.services.openrouter import OpenRouter
 from enan_ultra.services.providers import ProviderRouter
 from enan_ultra.services.agents import AgentOrchestrator
 from enan_ultra.services.code_sandbox import CodeSandbox
+from enan_ultra.services.mission_control import MissionControl
 from enan_ultra.services.health import resource_metrics
 from enan_ultra.services.integrations import HomeAssistantClient, VMControl, install_sanitized_log_buffer
+from enan_ultra.sticker_collector import inline_sticker_query
 from enan_ultra.storage.database import Database
 
 logger = logging.getLogger(__name__)
@@ -45,15 +52,73 @@ def build_application(settings: Settings) -> Application:
     media = MediaProcessor(settings, router)
     actions = ActionRegistry(settings, home_assistant=home_assistant, vm_control=vm_control, sandbox=sandbox)
     agents = AgentOrchestrator(settings, db, router)
-    handlers = BotHandlers(settings, db, router, files, media, actions, agents)
+    missions = MissionControl(settings, db, router)
+    handlers = BotHandlers(settings, db, router, files, media, actions, agents, missions)
+    sticker_collector = handlers.sticker_collector
     dashboard = AdminDashboard(settings, db, router, actions, vm_control) if settings.dashboard_enabled else None
+    mini_app = MiniAppServer(settings, db, router, handlers, handlers.theme_engine) if settings.mini_app_url else None
+    provider_alert_lock = asyncio.Lock()
+    application_ref: Application | None = None
+
+    async def send_provider_failure_alert(app: Application, event: dict) -> None:
+        if not settings.admin_alerts:
+            return
+        async with provider_alert_lock:
+            now = datetime.now(UTC)
+            previous = await db.get_setting("provider_failure_alert_at")
+            if previous:
+                try:
+                    last_sent = datetime.fromisoformat(previous)
+                except ValueError:
+                    last_sent = None
+                if last_sent and now - last_sent < timedelta(minutes=10):
+                    return
+            await db.set_setting("provider_failure_alert_at", now.isoformat())
+            allowed_providers = set(router.adapters)
+            failures = [
+                f"{item.get('provider')} ({item.get('category')})"
+                for item in event.get("failures", [])
+                if item.get("provider") in allowed_providers
+            ]
+            if not failures:
+                return
+            try:
+                await app.bot.send_message(
+                    chat_id=settings.admin_chat_id,
+                    text=(
+                        "⚠️ AI provider failover exhausted.\n"
+                        f"Correlation ID: {str(event.get('correlation_id', ''))[:32]}\n"
+                        "Provider errors: " + ", ".join(failures[:8])
+                        + "\nUse /providerdiag for local circuit status."
+                    ),
+                )
+            except Exception as exc:
+                logger.info("Provider failure alert delivery failed (%s)", type(exc).__name__)
+
+    def schedule_provider_failure_alert(event: dict) -> None:
+        if application_ref:
+            application_ref.create_task(
+                send_provider_failure_alert(application_ref, event),
+                name="provider-failure-admin-alert",
+            )
 
     async def post_init(app: Application) -> None:
+        nonlocal application_ref
+        application_ref = app
+        router.failure_notifier = schedule_provider_failure_alert
         await db.open()
+        recovered_missions = await db.recover_missions_after_restart()
+        if recovered_missions:
+            logger.info("Paused %s interrupted mission(s) for explicit owner resumption", recovered_missions)
+        await _migrate_legacy_sticker_catalog(
+            db, settings.database_path.with_name("stickers_store.db"),
+        )
         app.bot_data["database"] = db
+        app.bot_data["sticker_collector"] = sticker_collector
         app.bot_data["openrouter"] = openrouter
         app.bot_data["provider_router"] = router
         app.bot_data["action_registry"] = actions
+        app.bot_data["mission_control"] = missions
         app.bot_data["settings"] = settings
         await handlers.register_commands(app)
         try:
@@ -61,8 +126,14 @@ def build_application(settings: Settings) -> Application:
                 BotCommand("model", "Change the current AI model"),
                 BotCommand("models", "List models from configured providers"),
                 BotCommand("status", "Bot status"),
+                BotCommand("providers", "Configured provider health"),
+                BotCommand("providerdiag", "Provider circuit and credential diagnostics"),
+                BotCommand("admin", "Open the administrator menu"),
+                BotCommand("theme", "Choose adaptive visual themes"),
+                BotCommand("app", "Open the OMEGA AI workspace"),
                 BotCommand("end", "End a live session"),
                 BotCommand("endall", "End all live sessions"),
+                BotCommand("end_all", "End all live sessions"),
                 BotCommand("clearuser", "Clear a user's conversation memory"),
                 BotCommand("resetuser", "Clear a user's conversation memory"),
                 BotCommand("device", "Allowlisted Home Assistant control"),
@@ -70,11 +141,54 @@ def build_application(settings: Settings) -> Application:
                 BotCommand("block", "Block a user's bot access"),
                 BotCommand("unblock", "Unblock a user's bot access"),
                 BotCommand("tasks", "Manage your personal task list"),
-                BotCommand("search", "Search recent chat history"),
+                BotCommand("voice", "Toggle AI voice replies"),
+                BotCommand("image", "Generate an image"),
+                BotCommand("imagine", "Generate an image"),
+                BotCommand("search", "Search the live web"),
+                BotCommand("historysearch", "Search recent chat history"),
+                BotCommand("collect_on", "Enable admin-only sticker collection"),
+                BotCommand("collect_off", "Disable sticker collection"),
+                BotCommand("import_sticker_set", "Import a sticker pack for review"),
+                BotCommand("cancel_sticker_import", "Cancel your active sticker import"),
+                BotCommand("sticker_stats", "Show sticker catalog health"),
+                BotCommand("sticker_search", "Search sticker metadata"),
+                BotCommand("sticker_review", "List stickers pending approval"),
+                BotCommand("sticker_categorize", "Categorize and approve a sticker"),
+                BotCommand("sticker_export", "Export sticker catalog metadata"),
+                BotCommand("evolve_status", "Evolution proposal history"),
+                BotCommand("evolve_pending", "Pending evolution proposals"),
+                BotCommand("evolve_review", "Review a patch and test report"),
+                BotCommand("evolve_test", "Run an isolated patch test"),
+                BotCommand("evolve_approve", "Approve a patch for sandbox staging"),
+                BotCommand("evolve_stage", "Verify a staging candidate"),
+                BotCommand("evolve_deploy_approve", "Record production approval"),
+                BotCommand("evolve_cancel", "Cancel an evolution proposal"),
+                BotCommand("learning_status", "Show learning signal status"),
+                BotCommand("learning_pause", "Pause improvement signals"),
+                BotCommand("learning_resume", "Resume improvement signals"),
+                BotCommand("mission_new", "Start a private analysis mission"),
+                BotCommand("mission", "Mission Control menu"),
+                BotCommand("mission_list", "List your missions"),
+                BotCommand("mission_status", "Check a mission status"),
+                BotCommand("mission_pause", "Pause a mission"),
+                BotCommand("mission_resume", "Resume a mission"),
+                BotCommand("mission_cancel", "Cancel a mission"),
+                BotCommand("mission_report", "Show a mission report"),
+                BotCommand("mission_delete", "Delete a mission"),
             ]
-            await app.bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(settings.admin_chat_id))
+            for admin_scope_id in {settings.admin_chat_id, *settings.effective_admin_user_ids}:
+                await app.bot.set_my_commands(
+                    admin_commands, scope=BotCommandScopeChat(admin_scope_id),
+                )
         except Exception as exc:
             logger.info("Admin command menu was not updated (%s)", type(exc).__name__)
+        if mini_app:
+            try:
+                await app.bot.set_chat_menu_button(menu_button=MenuButtonWebApp(
+                    text="OMEGA AI", web_app=WebAppInfo(url=settings.mini_app_url),
+                ))
+            except Exception as exc:
+                logger.warning("Mini App menu button was not configured (%s)", type(exc).__name__)
         # Retry interrupted provider file deletions immediately after a service restart.
         await _cleanup_provider_files(db, router, settings, app)
         if dashboard:
@@ -90,10 +204,31 @@ def build_application(settings: Settings) -> Application:
             if not dashboard.server.started:
                 dashboard.server.should_exit = True
                 raise RuntimeError("Admin dashboard did not become ready on loopback")
+        if mini_app:
+            mini_app_task = app.create_task(mini_app.server.serve(), name="telegram-mini-app")
+            app.bot_data["mini_app_task"] = mini_app_task
+            for _ in range(50):
+                if mini_app.server.started:
+                    break
+                if mini_app_task.done():
+                    error = mini_app_task.exception()
+                    raise RuntimeError("Telegram Mini App server failed to start") from error
+                await asyncio.sleep(0.1)
+            if not mini_app.server.started:
+                mini_app.server.should_exit = True
+                raise RuntimeError("Telegram Mini App server did not become ready on loopback")
         app.bot_data["maintenance_task"] = app.create_task(_maintenance(app, db, router, settings))
         logger.info("Bot startup complete; SQLite WAL enabled; configured access mode=%s", settings.access_mode)
 
     async def post_shutdown(app: Application) -> None:
+        if mini_app:
+            mini_app.server.should_exit = True
+            task = app.bot_data.get("mini_app_task")
+            if task:
+                try:
+                    await task
+                except Exception as exc:
+                    logger.info("Mini App shutdown completed with (%s)", type(exc).__name__)
         if dashboard:
             dashboard.server.should_exit = True
             task = app.bot_data.get("dashboard_task")
@@ -121,6 +256,8 @@ def build_application(settings: Settings) -> Application:
         builder.base_url(settings.local_bot_api_base_url).base_file_url(settings.local_bot_api_file_url)
     app = builder.build()
     handlers.install(app)
+    app.add_handler(InlineQueryHandler(inline_sticker_query), group=0)
+    app.add_handler(MessageHandler(filters.Sticker.ALL, sticker_collector.handle), group=0)
     app.add_error_handler(_error_handler)
     return app
 
@@ -133,6 +270,10 @@ async def _maintenance(app: Application, db: Database, router: ProviderRouter, s
             await db.cleanup_documents()
             await db.cleanup_action_executions()
             await db.expire_approvals()
+            await db.expire_missions()
+            await db.expire_evolution_proposals()
+            await db.cleanup_mission_history()
+            await db.cleanup_evolution_history()
             await _cleanup_provider_files(db, router, settings, app)
             for reminder in await db.claim_due_reminders():
                 try:
@@ -151,6 +292,50 @@ async def _maintenance(app: Application, db: Database, router: ProviderRouter, s
         except Exception as exc:
             logger.warning("Maintenance cycle failed (%s)", type(exc).__name__)
         await asyncio.sleep(60)
+
+
+async def _migrate_legacy_sticker_catalog(db: Database, legacy_path: Path) -> None:
+    if await db.get_setting("legacy_sticker_catalog_migrated") == "on":
+        return
+    if not legacy_path.exists():
+        await db.set_setting("legacy_sticker_catalog_migrated", "on")
+        return
+
+    def read_legacy_rows() -> list[tuple[str, str, str]]:
+        with sqlite3.connect(legacy_path) as connection:
+            return [
+                (str(row[0]), str(row[1] or ""), str(row[2] or "general"))
+                for row in connection.execute(
+                    "SELECT file_id,emoji,category FROM auto_stickers ORDER BY id"
+                )
+            ]
+
+    try:
+        rows = await asyncio.to_thread(read_legacy_rows)
+        migrated = 0
+        for file_id, emoji, category in rows:
+            if category not in {
+                "greeting", "happy", "celebration", "thanks", "thinking",
+                "confused", "encouragement", "supportive", "programming",
+                "science", "goodbye", "general", "laugh", "sad", "angry", "love",
+            }:
+                category = "general"
+            migrated += int(await db.save_sticker(
+                file_id=file_id, file_unique_id=None, emoji=emoji,
+                category=category, source_type="legacy_import",
+                approved=False,
+            ))
+        await db.set_setting("legacy_sticker_catalog_migrated", "on")
+        if rows:
+            logger.info(
+                "Migrated %s legacy sticker metadata record(s) into pending review",
+                migrated,
+            )
+    except sqlite3.Error as exc:
+        logger.warning(
+            "Legacy sticker catalog migration was not completed (%s)",
+            type(exc).__name__,
+        )
 
 
 async def _monitor_resources(app: Application, db: Database, settings: Settings) -> None:

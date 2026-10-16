@@ -1,0 +1,10 @@
+{
+  "id": "ai_robotics",
+  "label": {"bn": "নিউরাল নেটওয়ার্ক", "en": "Neural Network"},
+  "icon": "🤖",
+  "colors": {"background": "#11152b", "surface": "#202744", "accent": "#ff9fcb", "glow": "#8464eb", "text": "#fff5fb"},
+  "animation": "neural-network",
+  "motion": "medium",
+  "contrast": "standard",
+  "detector": {"keywords_en": ["artificial intelligence", "machine learning", "neural network", "robotics", "robot", "large language model", "llm", "deep learning", "computer vision", "reinforcement learning", "krtrim buddhimotta", "kritrim buddhimotta", "machine learning shikhte", "robot banate", "ai diye"], "keywords_bn": ["কৃত্রিম বুদ্ধিমত্তা", "মেশিন লার্নিং", "নিউরাল নেটওয়ার্ক", "রোবোটিক্স", "রোবট", "লার্জ ল্যাঙ্গুয়েজ মডেল", "ডিপ লার্নিং", "কম্পিউটার ভিশন"]}
+}

@@ -35,7 +35,11 @@ def main() -> None:
     for noisy_logger in ("httpx", "httpcore", "telegram"):
         logging.getLogger(noisy_logger).setLevel(logging.WARNING)
     application = build_application(settings)
-    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=False, close_loop=True)
+    application.run_polling(
+        allowed_updates=[*Update.ALL_TYPES, "stopped_message_generation"],
+        drop_pending_updates=False,
+        close_loop=True,
+    )
 
 
 if __name__ == "__main__":

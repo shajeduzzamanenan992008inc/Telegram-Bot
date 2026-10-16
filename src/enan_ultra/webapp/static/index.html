@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="bn">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#091421">
+  <meta name="color-scheme" content="dark light">
+  <title>OMEGA NEXUS PRIME</title>
+  <link rel="stylesheet" href="/assets/app.css">
+  <script src="https://telegram.org/js/telegram-web-app.js?64"></script>
+  <script defer src="/assets/app.js"></script>
+</head>
+<body>
+  <canvas id="scene" aria-hidden="true"></canvas>
+  <div class="veil" aria-hidden="true"></div>
+  <div class="shell">
+    <header class="topbar">
+      <a class="brand" href="#home" aria-label="Omega home">
+        <span class="brand-orb" aria-hidden="true">Ω</span>
+        <span><strong>OMEGA NEXUS</strong><small>ADAPTIVE AI WORKSPACE</small></span>
+      </a>
+      <div class="top-actions">
+        <span id="connection" class="connection" role="status">TELEGRAM SESSION</span>
+        <button id="settings-toggle" class="icon-button" type="button" aria-label="Settings" aria-expanded="false" aria-controls="settings">⚙</button>
+      </div>
+    </header>
+
+    <main id="home" class="workspace">
+      <aside class="side-panel" aria-label="Theme controls">
+        <div class="section-heading">
+          <div><span class="eyebrow">LIVE CONTEXT</span><h1>Adaptive themes</h1></div>
+          <span id="active-icon" class="active-icon" aria-hidden="true">✨</span>
+        </div>
+        <p class="muted">আলোচনার বিষয় বুঝে visual workspace নিজে বদলাবে।</p>
+        <div class="mode-row" role="group" aria-label="Theme mode">
+          <button type="button" class="mode-button" data-mode="auto" aria-pressed="true">Auto</button>
+          <button type="button" class="mode-button" data-mode="off" aria-pressed="false">Off</button>
+        </div>
+        <div class="current-theme">
+          <span class="current-label">এখনকার theme</span>
+          <strong id="active-theme">অরোরা</strong>
+          <span id="topic-status" class="topic-status">বিষয় বিশ্লেষণ করা হচ্ছে</span>
+        </div>
+        <div class="theme-list-heading"><span>VISUAL MODES</span><span id="theme-count">08</span></div>
+        <div id="theme-list" class="theme-list" role="listbox" aria-label="Choose a visual theme"></div>
+        <p class="side-note">Manual theme নির্বাচন করলে Auto ফেরত না আসা পর্যন্ত সেটিই থাকবে।</p>
+      </aside>
+
+      <section class="chat-panel" aria-label="AI chat workspace">
+        <div class="chat-header">
+          <div><span class="eyebrow">PRIVATE AI SESSION</span><h2>তোমার workspace</h2></div>
+          <button id="favorite" class="favorite-button" type="button" aria-pressed="false" title="এই theme পছন্দ হিসেবে রাখো">♡ <span>পছন্দ</span></button>
+        </div>
+        <div id="notice" class="notice" role="status" hidden></div>
+        <div id="messages" class="messages" role="log" aria-live="polite" aria-relevant="additions text">
+          <div class="welcome-card">
+            <span id="welcome-icon" class="welcome-orb" aria-hidden="true">✦</span>
+            <div><strong>স্বাগতম</strong><p>যে বিষয় নিয়ে কথা বলতে চাও, লিখে শুরু করো। বিষয় বদলালে পরিবেশও বদলাবে।</p></div>
+          </div>
+        </div>
+        <form id="chat-form" class="composer">
+          <label class="sr-only" for="prompt">তোমার বার্তা</label>
+          <textarea id="prompt" rows="1" maxlength="12000" placeholder="এখানে লিখো…" autocomplete="off" required></textarea>
+          <div class="composer-footer"><span class="composer-hint">Enter পাঠায় · Shift+Enter নতুন লাইন</span><div class="composer-actions"><button id="stop" class="stop-button" type="button" hidden>থামাও</button><button id="send" class="send-button" type="submit"><span>পাঠাও</span><span aria-hidden="true">↗</span></button></div></div>
+        </form>
+      </section>
+    </main>
+
+    <section class="tasks-panel" aria-labelledby="tasks-title">
+      <div class="tasks-heading">
+        <div><span class="eyebrow">PERSONAL TASKS</span><h2 id="tasks-title">আমার কাজ</h2></div>
+        <span id="task-count" class="task-count">0</span>
+      </div>
+      <form id="task-form" class="task-form">
+        <label class="sr-only" for="task-text">নতুন কাজ</label>
+        <input id="task-text" name="text" maxlength="500" placeholder="নতুন কাজ লিখো…" autocomplete="off" required>
+        <label class="sr-only" for="task-priority">Priority</label>
+        <select id="task-priority" name="priority" aria-label="Priority">
+          <option value="normal">সাধারণ</option><option value="low">কম</option>
+          <option value="high">উচ্চ</option><option value="urgent">জরুরি</option>
+        </select>
+        <label class="sr-only" for="task-due">শেষ তারিখ</label>
+        <input id="task-due" name="due_at" type="date" aria-label="শেষ তারিখ">
+        <button class="send-button task-add" type="submit">যোগ করো</button>
+      </form>
+      <div id="task-list" class="task-list" role="list" aria-live="polite">
+        <p class="task-empty">কাজ লোড হচ্ছে…</p>
+      </div>
+    </section>
+
+    <section id="settings" class="settings-panel" aria-label="Workspace settings" hidden>
+      <div class="settings-title"><div><span class="eyebrow">PERSONALIZATION</span><h2>তোমার পছন্দ</h2></div><button id="settings-close" class="icon-button" type="button" aria-label="Close settings">×</button></div>
+      <div class="settings-grid">
+        <label>Appearance<select id="appearance"><option value="system">System</option><option value="dark">Dark</option><option value="light">Light</option></select></label>
+        <label>Animation<select id="animation"><option value="auto">Auto</option><option value="full">Full</option><option value="reduced">Reduced</option><option value="off">Off</option></select></label>
+        <label>Accent palette<select id="palette"><option value="default">Adaptive</option><option value="teal">Teal</option><option value="violet">Violet</option><option value="amber">Amber</option><option value="rose">Rose</option></select></label>
+        <label class="learning-setting"><span>পছন্দ শেখা</span><span class="switch-wrap"><input id="learning" type="checkbox"><span class="switch" aria-hidden="true"></span></span></label>
+      </div>
+      <p class="settings-note">পছন্দ শেখা বন্ধ করলে নতুন theme feedback আর সংরক্ষণ হবে না। Reset করলে রাখা visual preference মুছে Auto mode চালু হবে।</p>
+      <button id="reset-theme" class="reset-button" type="button">Reset visual preferences</button>
+    </section>
+    <footer class="footer"><span id="footer-theme">✨ Adaptive Aurora</span><span>Private · Telegram verified</span></footer>
+  </div>
+</body>
+</html>

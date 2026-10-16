@@ -34,6 +34,9 @@ class AssistantResult:
     usage: dict[str, Any] = field(default_factory=dict)
     tool_calls: tuple[dict[str, Any], ...] = ()
     citations: tuple[str, ...] = ()
+    provider: str = ""
+    latency_ms: int | None = None
+    correlation_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)

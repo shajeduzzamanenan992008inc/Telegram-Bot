@@ -45,6 +45,23 @@ def test_personal_kb_is_encrypted_isolated_and_deletable(tmp_path: Path) -> None
                 chat_id=900, filename="private.txt", mime_type="text/plain",
                 chunks=[("line 4", "private Orchid launch code")],
             )
+            assert await db.document_for_export(901, source_id) is None
+            report_source = await db.document_for_export(900, source_id)
+            assert report_source == {
+                "filename": "private.txt",
+                "mime_type": "text/plain",
+                "chunks": [{"source": "line 4", "content": "private Orchid launch code"}],
+            }
+            await db._db().execute(
+                "UPDATE documents SET expires_at='2000-01-01T00:00:00+00:00' WHERE id=?",
+                (source_id,),
+            )
+            await db._db().commit()
+            assert await db.document_for_export(900, source_id) is None
+            source_id = await db.save_document(
+                chat_id=900, filename="private.txt", mime_type="text/plain",
+                chunks=[("line 4", "private Orchid launch code")],
+            )
             kb_id = await db.promote_document_to_kb(user_id=11, chat_id=900, document_id=source_id)
             assert (await db.search_kb(11, "Orchid"))[0]["content"] == "private Orchid launch code"
             assert await db.search_kb(12, "Orchid") == []
@@ -130,7 +147,7 @@ def test_tool_action_claim_is_one_shot_per_message(tmp_path: Path) -> None:
             )
             assert tuple(rows[0]) == ("complete", "poll sent")
             versions = await db._db().execute_fetchall("SELECT version FROM schema_version ORDER BY version")
-            assert [row[0] for row in versions][-1] == 8
+            assert [row[0] for row in versions][-1] == 14
         finally:
             await db.close()
 
@@ -272,11 +289,76 @@ def test_recurring_reminders_and_user_data_export_delete(tmp_path: Path) -> None
             versions = await reopened._db().execute_fetchall(
                 "SELECT version FROM schema_version ORDER BY version",
             )
-            assert [row[0] for row in versions][-1] == 8
+            assert [row[0] for row in versions][-1] == 14
             columns = await reopened._db().execute_fetchall("PRAGMA table_info(reminders)")
             assert "repeat_seconds" in {row["name"] for row in columns}
         finally:
             await reopened.close()
+
+    asyncio.run(scenario())
+
+
+def test_task_dependencies_enforce_order_ownership_and_export(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        db = Database(tmp_path / "assistant.sqlite3", data_key=KEY)
+        await db.open()
+        try:
+            user_id = 77
+            prerequisite = await db.add_task(user_id, "Collect requirements")
+            dependent = await db.add_task(
+                user_id, "Implement feature", depends_on=[prerequisite, prerequisite],
+            )
+            tasks = {task["id"]: task for task in await db.list_tasks(user_id)}
+            assert tasks[dependent]["depends_on"] == [prerequisite]
+            assert tasks[dependent]["blocked_by"] == [prerequisite]
+            assert not await db.complete_task(user_id, dependent)
+            with pytest.raises(ValueError, match="owned by you"):
+                await db.add_task(88, "Cross-account dependency", depends_on=[prerequisite])
+            with pytest.raises(ValueError, match="depend on this task"):
+                await db.delete_task(user_id, prerequisite)
+
+            assert await db.complete_task(user_id, prerequisite)
+            assert await db.complete_task(user_id, dependent)
+            completed = next(task for task in await db.list_tasks(user_id) if task["id"] == dependent)
+            assert completed["blocked_by"] == []
+
+            exported = await db.export_user_data(user_id, user_id)
+            exported_task = next(task for task in exported["tasks"] if task["id"] == dependent)
+            assert exported_task["depends_on"] == [prerequisite]
+        finally:
+            await db.close()
+
+    asyncio.run(scenario())
+
+
+def test_task_plan_is_atomic_and_dependencies_use_prior_step_numbers(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        db = Database(tmp_path / "assistant.sqlite3")
+        await db.open()
+        try:
+            task_ids = await db.add_task_plan(
+                77,
+                [
+                    {"text": "Define requirements", "priority": "high"},
+                    {"text": "Build the feature", "depends_on": [1]},
+                    {"text": "Verify the result", "depends_on": [2]},
+                ],
+            )
+            assert len(task_ids) == 3
+            tasks = {task["id"]: task for task in await db.list_tasks(77)}
+            assert tasks[task_ids[1]]["depends_on"] == [task_ids[0]]
+            assert tasks[task_ids[2]]["blocked_by"] == [task_ids[1]]
+            with pytest.raises(ValueError, match="earlier step"):
+                await db.add_task_plan(
+                    88,
+                    [
+                        {"text": "First", "depends_on": [2]},
+                        {"text": "Second"},
+                    ],
+                )
+            assert await db.list_tasks(88) == []
+        finally:
+            await db.close()
 
     asyncio.run(scenario())
 
@@ -596,7 +678,7 @@ def test_translation_and_quiz_follow_usage_limits_and_profile_privacy(tmp_path: 
                 effective_message=message,
             )
             await handlers.translate(update, SimpleNamespace(args=["bn", "Hello world"]))
-            assert message.replies[-1] == "generated result"
+            assert message.replies[-1] == "✨ AI RESPONSE · অরোরা\n\ngenerated result"
             assert router.calls[-1]["local_only"] is True
             assert "Bengali" in router.calls[-1]["messages"][0]["content"]
 
@@ -734,7 +816,9 @@ def test_command_help_and_menu_are_in_english() -> None:
         await handlers.register_commands(app)
         commands = set_my_commands.await_args.args[0]
         assert all(not any("\u0980" <= char <= "\u09ff" for char in command.description) for command in commands)
-        assert {command.command for command in commands} >= {"help", "clear", "reset"}
+        assert {command.command for command in commands} >= {
+            "help", "clear", "reset", "document", "knowledge", "research", "snooze",
+        }
 
     asyncio.run(scenario())
 
@@ -985,7 +1069,7 @@ def test_provider_fallback_and_local_only_never_call_cloud() -> None:
     asyncio.run(scenario())
 
 
-def test_key_rotation_retries_only_eligible_statuses_and_rotates_starting_key(caplog) -> None:
+def test_key_rotation_changes_key_only_for_invalid_credentials(caplog) -> None:
     async def scenario() -> None:
         rotation = KeyRotation("test-provider", ("key-a", "key-b", "key-c"))
         attempted: list[str] = []
@@ -993,12 +1077,13 @@ def test_key_rotation_retries_only_eligible_statuses_and_rotates_starting_key(ca
         async def fail_then_succeed(key: str | None, _index: int) -> str:
             attempted.append(key or "")
             if key == "key-a":
-                raise ProviderError("rate limited", 429)
+                raise ProviderError("unauthorized", 401)
             return key or ""
 
         assert await rotation.run(fail_then_succeed) == "key-b"
         assert attempted == ["key-a", "key-b"]
-        assert "test-provider API key 1 failed with HTTP 429" in caplog.text
+        assert "credential 1 was rejected and quarantined" in caplog.text
+        assert rotation.diagnostics()["quarantined_credentials"] == 1
 
         attempted.clear()
 
@@ -1009,13 +1094,21 @@ def test_key_rotation_retries_only_eligible_statuses_and_rotates_starting_key(ca
         assert await rotation.run(next_request) == "key-b"
         assert attempted == ["key-b"]
 
-        async def unauthorized(key: str | None, _index: int) -> str:
+        async def rate_limited(key: str | None, _index: int) -> str:
             attempted.append(key or "")
-            raise ProviderError("unauthorized", 401)
+            raise ProviderError("rate limited", 429, retry_after=30)
 
-        with pytest.raises(ProviderError, match="unauthorized"):
-            await rotation.run(unauthorized)
-        assert attempted[-3:] == ["key-c", "key-a", "key-b"]
+        attempted.clear()
+        with pytest.raises(ProviderError, match="rate limited"):
+            await rotation.run(rate_limited)
+        assert attempted == ["key-c"]
+        assert rotation.diagnostics()["cooldown_seconds"] >= 29
+        attempted.clear()
+        with pytest.raises(ProviderError, match="cooling down"):
+            await rotation.run(next_request)
+        assert attempted == []
+        await rotation.clear_quarantine()
+        assert rotation.diagnostics()["cooldown_seconds"] == 0
 
         async def forbidden(_key: str | None, _index: int) -> str:
             raise ProviderError("forbidden", 403)
@@ -1026,7 +1119,7 @@ def test_key_rotation_retries_only_eligible_statuses_and_rotates_starting_key(ca
     asyncio.run(scenario())
 
 
-def test_openai_adapter_retries_request_with_next_authorization_key() -> None:
+def test_openai_adapter_does_not_rotate_keys_on_rate_limit() -> None:
     from enan_ultra.services.providers import OpenAICompatibleAdapter
 
     async def scenario() -> None:
@@ -1037,24 +1130,19 @@ def test_openai_adapter_retries_request_with_next_authorization_key() -> None:
 
         async def respond(request: httpx.Request) -> httpx.Response:
             seen_keys.append(request.headers.get("authorization", ""))
-            if len(seen_keys) == 1:
-                return httpx.Response(429, request=request)
-            return httpx.Response(
-                200,
-                json={"model": "test-model", "choices": [{"message": {"content": "ok"}}]},
-                request=request,
-            )
+            return httpx.Response(429, headers={"Retry-After": "12"}, request=request)
 
         adapter.client = httpx.AsyncClient(
             base_url="https://api.example.test/v1", transport=httpx.MockTransport(respond),
         )
         try:
-            result = await adapter.complete(
-                "test-model", [{"role": "user", "content": "hello"}],
-                tools=None, max_tokens=20,
-            )
-            assert result.text == "ok"
-            assert seen_keys == [f"Bearer {key}" for key in settings.openai_keys]
+            with pytest.raises(ProviderError) as raised:
+                await adapter.complete(
+                    "test-model", [{"role": "user", "content": "hello"}],
+                    tools=None, max_tokens=20,
+                )
+            assert raised.value.retry_after == 12
+            assert seen_keys == ["Bearer key-a"]
         finally:
             await adapter.close()
 
@@ -1065,7 +1153,7 @@ def test_openai_adapter_retries_request_with_next_authorization_key() -> None:
     ("provider", "credential_header"),
     [("openrouter", "authorization"), ("anthropic", "x-api-key"), ("gemini", "x-goog-api-key")],
 )
-def test_provider_adapters_retry_auth_or_quota_failures_with_next_key(
+def test_provider_adapters_rotate_only_after_auth_failure(
     provider: str, credential_header: str,
 ) -> None:
     from enan_ultra.services.openrouter import OpenRouter
@@ -1096,7 +1184,7 @@ def test_provider_adapters_retry_auth_or_quota_failures_with_next_key(
         async def respond(request: httpx.Request) -> httpx.Response:
             seen_keys.append(request.headers.get(credential_header, ""))
             if len(seen_keys) == 1:
-                return httpx.Response(402, request=request)
+                return httpx.Response(401, request=request)
             return httpx.Response(200, json={"data": []}, request=request)
 
         adapter.client = httpx.AsyncClient(
@@ -1125,7 +1213,7 @@ def test_provider_adapters_retry_auth_or_quota_failures_with_next_key(
         ),
     ],
 )
-def test_openai_compatible_provider_adapters_rotate_credentials(
+def test_openai_compatible_provider_adapters_respect_account_rate_limit(
     provider: str, base_url: str,
 ) -> None:
     from enan_ultra.services.providers import OpenAICompatibleAdapter
@@ -1139,16 +1227,16 @@ def test_openai_compatible_provider_adapters_rotate_credentials(
         async def respond(request: httpx.Request) -> httpx.Response:
             seen_keys.append(request.headers.get("authorization", ""))
             if len(seen_keys) == 1:
-                return httpx.Response(429, request=request)
+                return httpx.Response(429, headers={"Retry-After": "9"}, request=request)
             return httpx.Response(200, json={"data": []}, request=request)
 
         adapter.client = httpx.AsyncClient(
             base_url=base_url, transport=httpx.MockTransport(respond),
         )
         try:
-            response = await adapter._request("GET", "/models")
-            assert response.status_code == 200
-            assert seen_keys == ["Bearer key-a", "Bearer key-b"]
+            with pytest.raises(ProviderError):
+                await adapter._request("GET", "/models")
+            assert seen_keys == ["Bearer key-a"]
         finally:
             await adapter.close()
 
@@ -1228,7 +1316,7 @@ def test_settings_loads_free_provider_keys_and_cloudflare_endpoint(monkeypatch, 
         def respond(request: httpx.Request) -> httpx.Response:
             requests.append((request.headers["Authorization"], request.url.path))
             if len(requests) == 1:
-                return httpx.Response(429, request=request)
+                return httpx.Response(401, request=request)
             return httpx.Response(
                 200,
                 json={"model": "meta-llama/test-instruct", "choices": [

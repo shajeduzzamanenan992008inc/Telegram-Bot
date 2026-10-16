@@ -1,0 +1,10 @@
+{
+  "id": "programming",
+  "label": {"bn": "কোড ল্যাব", "en": "Cyber Code"},
+  "icon": "💻",
+  "colors": {"background": "#071321", "surface": "#102339", "accent": "#55e6c1", "glow": "#1685b8", "text": "#effaff"},
+  "animation": "code-rain",
+  "motion": "medium",
+  "contrast": "standard",
+  "detector": {"keywords_en": ["programming", "programing", "coding", "code", "python", "javascript", "debugging", "algorithm", "software", "function", "repository", "compiler", "api", "code likhte", "code bujhao", "bug fix korte", "debug korte", "programming shikhte", "programing sikte", "python shikhte", "app banate", "website banate"], "keywords_bn": ["প্রোগ্রামিং", "কোড", "পাইথন", "জাভাস্ক্রিপ্ট", "ডিবাগ", "অ্যালগরিদম", "সফটওয়্যার", "কম্পাইলার", "কোড লিখ", "রিপোজিটরি"]}
+}

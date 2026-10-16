@@ -1,0 +1,10 @@
+{
+  "id": "business",
+  "label": {"bn": "বিজনেস স্টুডিও", "en": "Strategy Studio"},
+  "icon": "📈",
+  "colors": {"background": "#101a29", "surface": "#1b2b3d", "accent": "#efc679", "glow": "#bd8144", "text": "#fffaf0"},
+  "animation": "chart-lines",
+  "motion": "low",
+  "contrast": "standard",
+  "detector": {"keywords_en": ["business", "marketing", "startup", "revenue", "strategy", "product launch", "sales", "customer", "market research", "entrepreneurship", "finance", "byabsha", "babsha", "biponon", "rajoshsho", "business plan", "startup khulte"], "keywords_bn": ["ব্যবসা", "বিপণন", "স্টার্টআপ", "রাজস্ব", "কৌশল", "পণ্য বাজারজাত", "বিক্রয়", "গ্রাহক", "বাজার গবেষণা", "উদ্যোক্তা", "অর্থায়ন"]}
+}
