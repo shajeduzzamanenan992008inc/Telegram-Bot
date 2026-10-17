@@ -1,0 +1,19 @@
+{
+  "git_tag_v3_0": "legacy source tag on parent revision; not used as package version",
+  "import_origin_check": "PASS; package resolved inside temporary target install",
+  "independent_wheel_install": "PASS",
+  "locked_dependency_file": "uv.lock",
+  "project_name": "enan-ultra-telegram-ai",
+  "project_version": "0.1.0",
+  "python_build": "3.15.0",
+  "signature_status": "unsigned local commit; no signature claimed or verified",
+  "source_archive": "source.zip",
+  "source_archive_files_verified_against_commit": 145,
+  "source_archive_sha256": "4a613bb2cb0ccbe8caa308f5f204e9791d161e2475a74575069b1739e56f7285",
+  "source_commit": "4448a84786fe88afaf9ea067a0aca4742ba46184",
+  "source_tree": "0e4a8048ab021207fc3786fee27daaadf35ebafc",
+  "uv_lock_sha256": "3180c29953f2701e3f222fdc625243776b59091e82689d6e4ce5a0198aec51ef",
+  "wheel": "wheel/enan_ultra_telegram_ai-0.1.0-py3-none-any.whl",
+  "wheel_package_files_verified_against_commit": 54,
+  "wheel_sha256": "51452930a6d5fc1e13249f0e590647a3e0429fc83d27306bfbb68f70fe5057bd"
+}
