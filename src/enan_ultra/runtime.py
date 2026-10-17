@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import re
 import sqlite3
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -28,6 +31,7 @@ from enan_ultra.services.code_sandbox import CodeSandbox
 from enan_ultra.services.mission_control import MissionControl
 from enan_ultra.services.health import resource_metrics
 from enan_ultra.services.integrations import HomeAssistantClient, VMControl, install_sanitized_log_buffer
+from enan_ultra.services.telegram_zip_updates import TelegramZipUpdateManager
 from enan_ultra.sticker_collector import inline_sticker_query
 from enan_ultra.storage.database import Database
 
@@ -129,6 +133,8 @@ def build_application(settings: Settings) -> Application:
                 BotCommand("providers", "Configured provider health"),
                 BotCommand("providerdiag", "Provider circuit and credential diagnostics"),
                 BotCommand("admin", "Open the administrator menu"),
+                BotCommand("update", "Stage a project ZIP for secure review"),
+                BotCommand("update_cancel", "Cancel a pending ZIP upload"),
                 BotCommand("theme", "Choose adaptive visual themes"),
                 BotCommand("app", "Open the OMEGA AI workspace"),
                 BotCommand("end", "End a live session"),
@@ -217,7 +223,18 @@ def build_application(settings: Settings) -> Application:
             if not mini_app.server.started:
                 mini_app.server.should_exit = True
                 raise RuntimeError("Telegram Mini App server did not become ready on loopback")
-        app.bot_data["maintenance_task"] = app.create_task(_maintenance(app, db, router, settings))
+        await handlers.notify_deployment_results(app)
+        app.bot_data["maintenance_task"] = app.create_task(
+            _maintenance(app, db, router, settings, handlers.update_manager),
+        )
+        if settings.update_deployment_enabled:
+            if not await db.health_check():
+                raise RuntimeError("Deployment health gate could not query the application database")
+            bot_identity = await app.bot.get_me()
+            _write_deployment_health_marker(
+                _deployment_health_marker_path(settings.database_path),
+                int(bot_identity.id),
+            )
         logger.info("Bot startup complete; SQLite WAL enabled; configured access mode=%s", settings.access_mode)
 
     async def post_shutdown(app: Application) -> None:
@@ -262,7 +279,42 @@ def build_application(settings: Settings) -> Application:
     return app
 
 
-async def _maintenance(app: Application, db: Database, router: ProviderRouter, settings: Settings) -> None:
+def _deployment_health_marker_path(database_path: Path) -> Path:
+    return database_path.parent / "runtime-health.json"
+
+
+def _write_deployment_health_marker(path: Path, telegram_bot_id: int) -> None:
+    payload = {
+        "pid": os.getpid(),
+        "started_at": time.time(),
+        "database_open": True,
+        "telegram_bot_id": telegram_bot_id,
+    }
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        temporary.write_text(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        if os.name != "nt":
+            temporary.chmod(0o600)
+        os.replace(temporary, path)
+    except OSError as exc:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            logger.error("Could not clean temporary deployment health marker (%s)", type(exc).__name__)
+        raise RuntimeError("Could not write the deployment health marker") from exc
+
+
+async def _maintenance(
+    app: Application,
+    db: Database,
+    router: ProviderRouter,
+    settings: Settings,
+    update_manager: TelegramZipUpdateManager | None = None,
+) -> None:
     while True:
         try:
             await _monitor_resources(app, db, settings)
@@ -274,6 +326,8 @@ async def _maintenance(app: Application, db: Database, router: ProviderRouter, s
             await db.expire_evolution_proposals()
             await db.cleanup_mission_history()
             await db.cleanup_evolution_history()
+            if update_manager:
+                await asyncio.to_thread(update_manager.cleanup_expired)
             await _cleanup_provider_files(db, router, settings, app)
             for reminder in await db.claim_due_reminders():
                 try:

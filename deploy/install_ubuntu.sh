@@ -19,9 +19,12 @@ if ! id enan-ultra >/dev/null 2>&1; then
   useradd --system --home-dir /var/lib/telegram-ai --shell /usr/sbin/nologin enan-ultra
 fi
 install -d -m 0755 "${APP_DIR}" "${CONFIG_DIR}"
+install -d -m 0755 /usr/local/libexec
 rsync -a \
   --exclude='.env' --exclude='.venv' --exclude='data' --exclude='__pycache__' \
   "${SOURCE_DIR}/" "${APP_DIR}/"
+chown -R root:root "${APP_DIR}"
+chmod -R go-w "${APP_DIR}"
 
 if ! command -v uv >/dev/null 2>&1; then
   pipx install uv
@@ -44,7 +47,14 @@ esac
 cd "${APP_DIR}"
 "${UV_BIN}" sync --locked --python "${PYTHON_VERSION}" --no-dev --group build
 install -m 0644 deploy/telegram-ai.service /etc/systemd/system/telegram-ai.service
+install -o root -g root -m 0750 deploy/telegram_ai_deploy.py /usr/local/libexec/telegram-ai-deploy
+install -m 0644 deploy/telegram-ai-deploy.service /etc/systemd/system/telegram-ai-deploy.service
+install -m 0644 deploy/telegram-ai-deploy.socket /etc/systemd/system/telegram-ai-deploy.socket
 install -d -m 0700 -o enan-ultra -g enan-ultra /var/lib/telegram-ai
+install -d -m 0700 -o root -g root \
+  /var/lib/telegram-ai-deploy \
+  /var/lib/telegram-ai-deploy/release-backups \
+  /var/lib/telegram-ai-deploy/deployment-history
 if [[ ! -f "${CONFIG_FILE}" ]]; then
   install -m 0600 .env.example "${CONFIG_FILE}"
   sed -i 's/^MALWARE_SCAN_ENABLED=false$/MALWARE_SCAN_ENABLED=true/' "${CONFIG_FILE}"

@@ -1,0 +1,16 @@
+{
+  "artifact_status": "review-only; not approved for production",
+  "git_revision": "eed00c9cd79fd926054f9103d28e9287d6b4d45f",
+  "remote_main_and_lightweight_tag_v3_0": "eed00c9cd79fd926054f9103d28e9287d6b4d45f",
+  "working_tree_changes_included": false,
+  "project_version": "0.1.0",
+  "python_build_runtime": "3.15",
+  "source_archive": "release-artifacts/readiness-eed00c9cd79f-20261017/enan-ultra-source-eed00c9cd79f.zip",
+  "source_archive_sha256": "2a251bb21c3187cb781054ab6e695a31c569869966f65ccce0e8b9ab33817e1f",
+  "wheel": "release-artifacts/readiness-eed00c9cd79f-20261017/wheel/enan_ultra_telegram_ai-0.1.0-py3-none-any.whl",
+  "wheel_sha256": "9eab4e2dcd20d53765ad6f5355c7c2a71adc4373b65cdfbac886e70a28ee4093",
+  "commit_signature_status": "present but unverifiable locally; signer public key unavailable",
+  "credential_scan": "no secret env file or OpenRouter/API key pattern; test-only token-shaped fixtures only; no values emitted",
+  "source_tests": "full test suite passed from clean archive",
+  "release_gate": "blocked: signer trust, version mismatch, target service/path mismatch, runtime/data mapping, Linux staging and rollback verification outstanding"
+}

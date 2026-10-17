@@ -100,6 +100,12 @@ class Database:
             await self.connection.close()
             self.connection = None
 
+    async def health_check(self) -> bool:
+        cursor = await self._db().execute("SELECT 1")
+        row = await cursor.fetchone()
+        await cursor.close()
+        return row is not None and int(row[0]) == 1
+
     async def backup_to(self, destination: Path) -> None:
         """Create a consistent, atomic SQLite backup suitable for encrypted-KB restore."""
         destination = Path(destination)
