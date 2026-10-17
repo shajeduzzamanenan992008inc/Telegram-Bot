@@ -1,0 +1,123 @@
+{
+  "generated_at": "2026-10-17",
+  "scope": "Application and deployment source fingerprints only; secret files, databases, runtime state, and credentials are excluded.",
+  "local_workspace": {
+    "repository": "https://github.com/shajeduzzamanenan992008inc/Telegram-Bot",
+    "branch": "main",
+    "head": "eed00c9cd79fd926054f9103d28e9287d6b4d45f",
+    "remote_main_and_v3_0_tag": "eed00c9cd79fd926054f9103d28e9287d6b4d45f",
+    "commit_signature": "Present but unverifiable locally because signer public key is unavailable.",
+    "working_tree": "Modified and untracked deployment changes exist; these fingerprints describe the current working tree, not the committed HEAD."
+  },
+  "local_working_tree_files": [
+    {
+      "path": "src/enan_ultra/__main__.py",
+      "size_bytes": 1492,
+      "sha256": "fb321a6a908b7e3c29633397eb2c7096a83f40e8b29a58dfcee40c6f82b349dd"
+    },
+    {
+      "path": "src/enan_ultra/config.py",
+      "size_bytes": 32937,
+      "sha256": "9197e421ab75028a46ca26f7a2b4793bbf3873deda2fd0eca98bb684f6e7f4bd"
+    },
+    {
+      "path": "src/enan_ultra/handlers.py",
+      "size_bytes": 243673,
+      "sha256": "d3154cee5e7f0f8f8de547fa99bb72ed48f4007abe19ad4b0e462592a997d881"
+    },
+    {
+      "path": "src/enan_ultra/runtime.py",
+      "size_bytes": 23631,
+      "sha256": "ca00bcc33eba4429ffec65a64948f70712ee3d325916456a20a4cbe78cacd8b4"
+    },
+    {
+      "path": "src/enan_ultra/storage/database.py",
+      "size_bytes": 135710,
+      "sha256": "fea5ab145377e3a79182ef47effdbae208698d27081417d8ff130e2a3e38e1e8"
+    },
+    {
+      "path": "src/enan_ultra/services/telegram_zip_updates.py",
+      "size_bytes": 41157,
+      "sha256": "27dd0a44113483b8281188188ebd412dabe9e355b9a9147168fdfc1c4d70bb26"
+    },
+    {
+      "path": "src/enan_ultra/services/telegram_deployment.py",
+      "size_bytes": 3094,
+      "sha256": "cfb3f75fede80fc9140ef35cf1d5fb94660c01e4891c77eecca118590904ead7"
+    },
+    {
+      "path": "deploy/telegram_ai_deploy.py",
+      "size_bytes": 56098,
+      "sha256": "0bfb03c3574a816e9a1f39b603a6ef4b5e81de049ce8c2b1fd5f0cf7ff3d8ca3"
+    },
+    {
+      "path": "deploy/telegram-ai.service",
+      "size_bytes": 906,
+      "sha256": "b3bf9d728b566b39eec222af21b1a1885fa57f6b8133cbc3255df36cda703ec0"
+    },
+    {
+      "path": "deploy/telegram-ai-deploy.service",
+      "size_bytes": 646,
+      "sha256": "0aceae4128dfb7cbabb77afc790f2dfb05db6ae62fb1b880fb3ed5899dc5cbf6"
+    },
+    {
+      "path": "deploy/telegram-ai-deploy.socket",
+      "size_bytes": 239,
+      "sha256": "3c6cfac4526a3d2a93cdd36aa5ee0d294e43d0451ec36a4b8c44b9de3bc9e93c"
+    },
+    {
+      "path": "pyproject.toml",
+      "size_bytes": 1000,
+      "sha256": "c43a9d766800a55e8736e3bec81c92291b579250826a3e8fd8d64323361ccc6c"
+    },
+    {
+      "path": "uv.lock",
+      "size_bytes": 289881,
+      "sha256": "3180c29953f2701e3f222fdc625243776b59091e82689d6e4ce5a0198aec51ef"
+    },
+    {
+      "path": "requirements.txt",
+      "size_bytes": 76392,
+      "sha256": "12ac0d59d49f6f3cc473f71befd7f5fa785ef5ad8ae1900fa1e5fcfc4901d59b"
+    }
+  ],
+  "azure_selected_service_imported_package": {
+    "service": "enan-ultra.service",
+    "working_directory": "/home/azureenan/Telegram-Bot-main",
+    "entry_point": "python -m enan_ultra",
+    "runtime_import_origin": "/home/azureenan/Telegram-Bot-main/.venv/lib/python3.12/site-packages/enan_ultra",
+    "source_provenance": "No Git metadata or independently authenticated release artifact was found in the active checkout.",
+    "files": [
+      {
+        "path": "enan_ultra/__main__.py",
+        "sha256": "097f21cbc19e71a80355d85aa285fc4fdf9abadc1c24a0a15f6a4a468d1cd49b"
+      },
+      {
+        "path": "enan_ultra/config.py",
+        "sha256": "b81d07ae2ebb934f1b15559d0b3fb13e1e5f0fbeb1891876558d43e35eef9da4"
+      },
+      {
+        "path": "enan_ultra/handlers.py",
+        "sha256": "2a5bf5e50205d6aab624bb67d44f4153c55e21184d8807c76c7f66b74bb384a4"
+      },
+      {
+        "path": "enan_ultra/runtime.py",
+        "sha256": "2a23b611805fc589b9bba51b13c8d76ad339fdc71fd5c21a0bd41ed81268346b"
+      },
+      {
+        "path": "enan_ultra/storage/database.py",
+        "sha256": "4f5ec388d5177a8d56afda80ea63a4bdc2229718b958a8ad446cc101d3d4a3ce"
+      },
+      {
+        "path": "enan_ultra/services/telegram_zip_updates.py",
+        "status": "absent"
+      }
+    ]
+  },
+  "notes": [
+    "Local fingerprints describe uncommitted working files and are not a release attestation.",
+    "The remote main branch and lightweight v3.0 tag point at the local HEAD, but the commit signature could not be validated without its public key.",
+    "The running VM imports the virtualenv site-packages copy; matching fingerprints against the home-directory source do not establish Git provenance.",
+    "No local wheel, source distribution, signature, or attested release bundle was available during this audit."
+  ]
+}
