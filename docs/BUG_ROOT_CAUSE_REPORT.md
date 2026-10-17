@@ -125,6 +125,7 @@ Sticker collection and theme rendering have no confirmed source root cause in th
 - `uvx --from ruff==0.17.1 ruff check --select E4,E7,E9,F src tests`: PASS.
 - `python -m compileall -q src tests`, `node --check src/enan_ultra/webapp/static/app.js`, and `uv build --wheel --no-sources`: PASS.
 - The full GitHub check details supplied by the user returned 404 from this workspace, so their original failure trace could not be confirmed. No claim is made that the older run's failure cause is known.
+- The remediation push `9b46cea44d3729956972673b798c5cc09031acd8` was verified remotely. GitHub Actions run [39040476917](https://github.com/shajeduzzamanenan992008inc/Telegram-Bot/actions/runs/39040476917) completed successfully with all six checks green: Python 3.11–3.15 tests and quality.
 - One non-isolated Python-matrix retry selected the existing Python 3.12 environment without project dependencies and stopped at collection with 16 `ModuleNotFoundError` errors and zero tests executed. Rerunning through `uv run --isolated` resolved the environment issue; the final Python 3.15 full suite passed as recorded above.
 
 Production remains **NO-GO** pending real scanner, Telegram, Linux/systemd, state, backup/restore, and rollback evidence.

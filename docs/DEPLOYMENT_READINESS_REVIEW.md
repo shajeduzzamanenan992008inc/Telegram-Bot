@@ -419,7 +419,7 @@ This section appends the local bug-fix work to the existing readiness history. N
 - CI quality checks passed locally: Ruff `0.17.1` with the workflow's `E4,E7,E9,F` selection, Python compileall, Mini App JavaScript syntax check, and wheel build.
 - One non-isolated matrix attempt accidentally selected the existing Python 3.12 environment without project dependencies and stopped during collection with 16 import errors and zero tests run. The isolated reruns above passed; this did not establish a source test failure.
 - ZIP, scanner, provider, authorization, deduplication, installation-idempotency, deployment-path, sticker, and theme tests use local fixtures or mocks. Tests did not call Telegram, ClamAV, production systemd, Azure, or the production deployment broker.
-- The GitHub Actions URLs and public jobs API for the prior run supplied in chat returned 404 from this workspace. Its original failure traceback and cause could not be established. New checks may run after the authorized source push.
+- The original run supplied in chat was unavailable to inspect, so its specific traceback remains unconfirmed. After push commit `9b46cea44d3729956972673b798c5cc09031acd8`, GitHub Actions run [39040476917](https://github.com/shajeduzzamanenan992008inc/Telegram-Bot/actions/runs/39040476917) completed successfully: all five Python test jobs (3.11–3.15) and the quality job passed.
 
 ### Remaining production gates
 
