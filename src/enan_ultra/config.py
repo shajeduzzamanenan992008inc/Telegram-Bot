@@ -204,6 +204,12 @@ class Settings:
     max_archive_expanded_bytes: int
     max_archive_files: int
     max_archive_depth: int
+    update_max_files: int
+    update_max_depth: int
+    update_max_path_length: int
+    update_max_compression_ratio: int
+    update_deployment_enabled: bool
+    update_deployment_socket_path: Path
     max_document_pages: int
     max_video_seconds: int
     max_video_frames: int
@@ -463,6 +469,14 @@ class Settings:
             max_archive_expanded_bytes=_int("MAX_ARCHIVE_EXPANDED_BYTES", 50 * 1024 * 1024, 1024, 500 * 1024 * 1024),
             max_archive_files=_int("MAX_ARCHIVE_FILES", 100, 1, 2000),
             max_archive_depth=_int("MAX_ARCHIVE_DEPTH", 2, 0, 8),
+            update_max_files=_int("UPDATE_MAX_FILES", 250, 1, 5000),
+            update_max_depth=_int("UPDATE_MAX_DEPTH", 8, 1, 16),
+            update_max_path_length=_int("UPDATE_MAX_PATH_LENGTH", 240, 64, 1024),
+            update_max_compression_ratio=_int("UPDATE_MAX_COMPRESSION_RATIO", 100, 1, 1000),
+            update_deployment_enabled=_bool("UPDATE_DEPLOYMENT_ENABLED", False),
+            update_deployment_socket_path=Path(
+                _value("UPDATE_DEPLOYMENT_SOCKET_PATH", "/run/telegram-ai-deploy.sock"),
+            ),
             max_document_pages=_int("MAX_DOCUMENT_PAGES", 100, 1, 2000),
             max_video_seconds=_int("MAX_VIDEO_SECONDS", 120, 1, 3600),
             max_video_frames=_int("MAX_VIDEO_FRAMES", 4, 1, 8),
@@ -518,6 +532,11 @@ class Settings:
         )
         if settings.access_mode == "allowlist" and not settings.allowed_user_ids:
             raise ValueError("ALLOWED_USER_IDS is required when ACCESS_MODE=allowlist")
+        if (
+            settings.update_deployment_enabled
+            and not settings.update_deployment_socket_path.is_absolute()
+        ):
+            raise ValueError("UPDATE_DEPLOYMENT_SOCKET_PATH must be an absolute path")
         parsed_api_url = urlsplit(settings.openrouter_base_url)
         if parsed_api_url.scheme != "https" or not parsed_api_url.hostname:
             raise ValueError("OPENROUTER_BASE_URL must be a valid HTTPS URL")
