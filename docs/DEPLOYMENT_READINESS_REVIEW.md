@@ -415,11 +415,12 @@ This section appends the local bug-fix work to the existing readiness history. N
 
 ### Verification and evidence
 
-- The final full suite on Windows/Python 3.15 passed: **191 passed in 75.70s** using an isolated locked environment. Full suites before the last caption-routing regression passed with **190 passed** on Python 3.11, 3.12, 3.13, and 3.14; the three final ZIP caption/scan/quarantine regression tests passed on each of those four versions.
+- The latest full suite on Windows/Python 3.15 passed: **193 passed in 87.08s** using an isolated locked environment. It includes an actual PTB `Application.process_update()` replay test that confirms one command and one general-message side effect, plus provider fallback tests for timeout and HTTP 429. Both new regression tests also passed individually on Python 3.11–3.14. Full suites before the last caption-routing regression passed with **190 passed** on Python 3.11, 3.12, 3.13, and 3.14; the three final ZIP caption/scan/quarantine regression tests passed on each of those four versions.
 - CI quality checks passed locally: Ruff `0.17.1` with the workflow's `E4,E7,E9,F` selection, Python compileall, Mini App JavaScript syntax check, and wheel build.
 - One non-isolated matrix attempt accidentally selected the existing Python 3.12 environment without project dependencies and stopped during collection with 16 import errors and zero tests run. The isolated reruns above passed; this did not establish a source test failure.
 - ZIP, scanner, provider, authorization, deduplication, installation-idempotency, deployment-path, sticker, and theme tests use local fixtures or mocks. Tests did not call Telegram, ClamAV, production systemd, Azure, or the production deployment broker.
 - The original run supplied in chat was unavailable to inspect, so its specific traceback remains unconfirmed. After push commit `9b46cea44d3729956972673b798c5cc09031acd8`, GitHub Actions run [39040476917](https://github.com/shajeduzzamanenan992008inc/Telegram-Bot/actions/runs/39040476917) completed successfully: all five Python test jobs (3.11–3.15) and the quality job passed.
+- The follow-up report commit `d6f97bf5f1f11746839e70481fb002792a5c7da3` also passed all six jobs in [run 39040628340](https://github.com/shajeduzzamanenan992008inc/Telegram-Bot/actions/runs/39040628340). CI for the two newly added tests will be checked after their commit is pushed.
 
 ### Remaining production gates
 

@@ -120,12 +120,13 @@ Sticker collection and theme rendering have no confirmed source root cause in th
 
 ### Verification results
 
-- Full local test suite on Windows/Python 3.15 after all code and test changes: `uv run --isolated --locked --python 3.15 --group test pytest -q` — **191 passed in 75.70s**.
+- Full local test suite on Windows/Python 3.15 after the added dispatch and provider-fallback regressions: `uv run --isolated --locked --python 3.15 --group test pytest -q` — **193 passed in 87.08s**. Both new regressions also passed individually on Python 3.11–3.14. The replay test exercises `Application.process_update()` twice with the same update and confirms that the command and message side effect each run once. The provider test confirms timeout and HTTP 429 failures fall back to the secondary adapter.
 - Full local suites before the final caption-routing regression: **190 passed** on each of Python 3.11, 3.12, 3.13, and 3.14. After the final ZIP route and quarantine changes, the three ZIP caption/scan/staging regressions passed on each of those four versions.
 - `uvx --from ruff==0.17.1 ruff check --select E4,E7,E9,F src tests`: PASS.
 - `python -m compileall -q src tests`, `node --check src/enan_ultra/webapp/static/app.js`, and `uv build --wheel --no-sources`: PASS.
 - The full GitHub check details supplied by the user returned 404 from this workspace, so their original failure trace could not be confirmed. No claim is made that the older run's failure cause is known.
 - The remediation push `9b46cea44d3729956972673b798c5cc09031acd8` was verified remotely. GitHub Actions run [39040476917](https://github.com/shajeduzzamanenan992008inc/Telegram-Bot/actions/runs/39040476917) completed successfully with all six checks green: Python 3.11–3.15 tests and quality.
+- The follow-up report commit `d6f97bf5f1f11746839e70481fb002792a5c7da3` also completed all six GitHub Actions checks successfully in run [39040628340](https://github.com/shajeduzzamanenan992008inc/Telegram-Bot/actions/runs/39040628340). The two added regression tests passed locally as part of the 193-test suite above; CI for their commit will be checked after push.
 - One non-isolated Python-matrix retry selected the existing Python 3.12 environment without project dependencies and stopped at collection with 16 `ModuleNotFoundError` errors and zero tests executed. Rerunning through `uv run --isolated` resolved the environment issue; the final Python 3.15 full suite passed as recorded above.
 
 Production remains **NO-GO** pending real scanner, Telegram, Linux/systemd, state, backup/restore, and rollback evidence.

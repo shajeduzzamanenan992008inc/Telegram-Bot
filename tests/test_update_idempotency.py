@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from telegram import Update, User
+from telegram.ext import Application, CommandHandler
 from telegram.ext import ApplicationHandlerStop
 
 from enan_ultra.handlers import BotHandlers
@@ -61,6 +63,57 @@ def test_extension_handler_stops_duplicate_and_database_failure_closed(tmp_path)
                 )
         finally:
             await db.close()
+
+    asyncio.run(scenario())
+
+
+def test_telegram_dispatch_runs_command_once_for_replayed_update() -> None:
+    async def scenario() -> None:
+        app = Application.builder().token("123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef").build()
+        # Dispatch only: avoid Application.initialize(), which performs getMe network I/O.
+        app._initialized = True
+        app.bot._bot_user = User(999, is_bot=True, first_name="test", username="testbot")
+        handlers = BotHandlers(
+            SimpleNamespace(
+                admin_id=1234, admin_chat_id=9876,
+                effective_admin_user_ids=frozenset({1234}),
+            ),
+            None, None, None, None, None,
+        )
+        claims: set[int] = set()
+        command_calls = 0
+
+        class DedupDatabase:
+            async def claim_update(self, update_id: int) -> bool:
+                if update_id in claims:
+                    return False
+                claims.add(update_id)
+                return True
+
+        async def command_handler(_update, _context) -> None:
+            nonlocal command_calls
+            command_calls += 1
+
+        handlers.db = DedupDatabase()
+        handlers.on_message = AsyncMock()
+        handlers.install(app)
+        app.add_handler(CommandHandler("probe", command_handler), group=0)
+        update = Update.de_json({
+            "update_id": 54321,
+            "message": {
+                "message_id": 17,
+                "date": 1_700_000_000,
+                "chat": {"id": 4444, "type": "private"},
+                "from": {"id": 1234, "is_bot": False, "first_name": "Admin"},
+                "text": "/probe",
+                "entities": [{"offset": 0, "length": 6, "type": "bot_command"}],
+            },
+        }, app.bot)
+
+        await app.process_update(update)
+        await app.process_update(update)
+        assert command_calls == 1
+        handlers.on_message.assert_awaited_once()
 
     asyncio.run(scenario())
 
