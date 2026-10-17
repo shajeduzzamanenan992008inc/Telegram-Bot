@@ -1095,6 +1095,40 @@ def test_provider_fallback_and_local_only_never_call_cloud() -> None:
     asyncio.run(scenario())
 
 
+def test_provider_timeout_and_rate_limit_fall_back_to_secondary_provider() -> None:
+    class _FailingAdapter(_FakeAdapter):
+        def __init__(self, name: str, model: str, error: Exception) -> None:
+            super().__init__(name, model)
+            self.error = error
+
+        async def complete(self, model, messages, *, tools, max_tokens, on_token=None):
+            self.calls += 1
+            raise self.error
+
+    async def verify_fallback(error: Exception) -> None:
+        router = object.__new__(ProviderRouter)
+        router.settings = SimpleNamespace(
+            provider_order=("openrouter", "groq"),
+            fallback_models=(), default_model="openrouter::primary-model",
+            ai_max_total_attempts=2, ai_request_timeout=1,
+        )
+        router.openrouter = None
+        primary = _FailingAdapter("openrouter", "primary-model", error)
+        secondary = _FakeAdapter("groq", "secondary-model")
+        router.adapters = {"openrouter": primary, "groq": secondary}
+
+        result = await router.complete([], primary_model=None, local_only=False)
+
+        assert result.model == "groq::secondary-model"
+        assert primary.calls == secondary.calls == 1
+
+    async def scenario() -> None:
+        await verify_fallback(TimeoutError("simulated provider timeout"))
+        await verify_fallback(ProviderError("simulated rate limit", 429, retry_after=5))
+
+    asyncio.run(scenario())
+
+
 def test_key_rotation_changes_key_only_for_invalid_credentials(caplog) -> None:
     async def scenario() -> None:
         rotation = KeyRotation("test-provider", ("key-a", "key-b", "key-c"))
