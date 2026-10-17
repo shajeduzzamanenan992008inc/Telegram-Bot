@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-10-17
+
+- Changed admin `/update` to accept a ZIP document, validate and safely overlay project files while preserving environment/database/persistent state, then clean up and replace the Python process. Update authorization now uses the single `ADMIN_ID` from `.env` (falling back to the lowest numeric legacy `ADMIN_USER_IDS` entry when unset).
+
 ## 2026-10-16
 
 - Added an administrator-only Telegram ZIP upload workflow with expiring chat-bound sessions, strict archive/path/type/size checks, allowlisted isolated staging, SHA-256 diff manifests, syntax validation, optional rootless offline sandbox tests, one-shot hash-bound staging review callbacks, audit events, and documented security/recovery boundaries. Production deployment and restart remain intentionally unimplemented.
