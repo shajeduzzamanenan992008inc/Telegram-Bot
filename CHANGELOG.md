@@ -2,10 +2,12 @@
 
 ## 2026-10-16
 
+- Added an administrator-only Telegram ZIP upload workflow with expiring chat-bound sessions, strict archive/path/type/size checks, allowlisted isolated staging, SHA-256 diff manifests, syntax validation, optional rootless offline sandbox tests, one-shot hash-bound staging review callbacks, audit events, and documented security/recovery boundaries. Production deployment and restart remain intentionally unimplemented.
+- Added a separate one-shot production approval and root-owned, fixed-path deployment broker with manifest/archive/base-hash verification, root-owned code snapshots, constrained systemd restart, DB/Telegram identity health checks, journal recovery, rollback, audit, and resource ceilings. Deployment remains disabled by default; no production deployment or recovery drill was performed, and the observed Azure VM layout remains incompatible pending operator review.
 - Added encrypted persistent Mission Control records with owner-scoped status/report/pause/resume/cancel/delete commands, bounded multilingual analysis planning, usage-budget enforcement, progress messages, restart-to-paused recovery, and retention cleanup. Missions expose no arbitrary tools or shell execution.
 - Added category-only feedback intake pause controls and a hash-bound evolution proposal lifecycle: encrypted patch/source retention, protected-path validation, rootless patch apply/test, admin review, one-shot staging approval, repeat sandbox verification, and a separate production-approval audit state.
 - Added a `git apply`-capable network-disabled sandbox image, tests for mission persistence/privacy, patch validation/redaction, failed-test gates, hash mismatches, replay and admin authorization, and operator docs for both workflows.
-- Production deployment, service restart, staging service health checks, and automatic rollback are not implemented; deployment approval is recorded without changing the live app.
+- ZIP workflow deployment remains disabled by default. Staging approval alone never deploys; production deployment requires explicit operator enablement and verified host prerequisites.
 - Replaced unconditional sticker collection in a separate SQLite file with an admin-only, private-chat collector that is disabled by default and uses the existing async database.
 - Added additive sticker catalog migrations, file-unique-ID deduplication, pending approval, pack metadata, tags, animation/dimension metadata, searchable categories, usage tracking and persistent per-user cooldowns.
 - Added Bot API sticker-set imports with batch yielding, duplicate/failure counts, per-admin cancellation and same-pack concurrency protection; added admin review, categorization, search, stats and private metadata export commands.

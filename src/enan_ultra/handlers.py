@@ -52,6 +52,10 @@ from enan_ultra.services.document_export import DocumentExportService
 from enan_ultra.services.telegram_messages import TelegramRichMessageService
 from enan_ultra.services.theme_engine import AdaptiveThemeEngine
 from enan_ultra.services.conversation_style import decorate_reply, StickerSelector
+from enan_ultra.services.telegram_zip_updates import (
+    StagedUpdate, TelegramZipUpdateManager, UPDATE_CALLBACK_HASH_PREFIX_LENGTH, redact_secrets,
+)
+from enan_ultra.services.telegram_deployment import TelegramDeploymentClient
 from enan_ultra.sticker_collector import (
     STICKER_CATEGORIES, StickerCollectorService,
 )
@@ -107,6 +111,16 @@ class BotHandlers:
         self.partial_generations: dict[int, str] = {}
         self._malware_alert_lock = asyncio.Lock()
         self._malware_alert_last_sent = 0.0
+        self.update_manager: TelegramZipUpdateManager | None = None
+        database_path = getattr(settings, "database_path", None)
+        if (
+            database_path and hasattr(settings, "admin_chat_id")
+            and hasattr(settings, "effective_admin_user_ids")
+        ):
+            self.update_manager = TelegramZipUpdateManager(
+                settings, Path.cwd(),
+                Path(database_path).parent.resolve() / ".telegram-zip-updates",
+            )
 
     def install(self, app: Application) -> None:
         self._installing_app = app
@@ -163,10 +177,18 @@ class BotHandlers:
             "evolve_cancel": self.evolve_cancel,
             "learning_status": self.learning_status, "learning_pause": self.learning_pause,
             "learning_resume": self.learning_resume,
+            "update": self.update, "update_cancel": self.update_cancel,
         }
         for name, callback in commands.items():
             app.add_handler(CommandHandler(name, callback), group=0)
         app.add_handler(CallbackQueryHandler(self.menu_callback, pattern=r"^main:(help|export|cancel)$"), group=0)
+        app.add_handler(
+            CallbackQueryHandler(
+                self.update_callback,
+                pattern=r"^zipupd:(review|approve|reject|cancel|deploy):",
+            ),
+            group=0,
+        )
         app.add_handler(MessageHandler(filters.ALL, self.on_message), group=1)
         app.add_handler(TypeHandler(Update, self.on_extension_update), group=-1)
 
@@ -225,6 +247,8 @@ class BotHandlers:
             ("learning_status", "Show learning signal status"),
             ("learning_pause", "Pause new improvement signal aggregation"),
             ("learning_resume", "Resume improvement signal aggregation"),
+            ("update", "Stage a project ZIP for secure review"),
+            ("update_cancel", "Cancel a pending ZIP upload"),
         ]
         try:
             await app.bot.set_my_commands([BotCommand(command, description) for command, description in names])
@@ -249,6 +273,347 @@ class BotHandlers:
             await msg.reply_text("You are not authorized to use this bot.")
             return False
         return True
+
+    async def update(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        del context
+        if not await self._gate(update, admin=True):
+            return
+        message, chat, user = update.effective_message, update.effective_chat, update.effective_user
+        manager = getattr(self, "update_manager", None)
+        if not message or not chat or not user or not manager:
+            if message:
+                await message.reply_text("ZIP staging is unavailable because the update manager is not configured.")
+            return
+        try:
+            manager.start_upload(user.id, chat.id)
+        except (PermissionError, ValueError) as exc:
+            await message.reply_text(str(exc))
+            return
+        await self.db.audit(user.id, "telegram_zip_update.upload_started", "pending", "awaiting ZIP")
+        await message.reply_text(
+            "ZIP upload session started (expires in 5 minutes). Send one .zip document in this configured "
+            "admin chat. The archive will be validated and staged only; production files and service "
+            "will not be changed. Cancel with /update_cancel."
+        )
+
+    async def update_cancel(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        del context
+        if not await self._gate(update, admin=True):
+            return
+        message, chat, user = update.effective_message, update.effective_chat, update.effective_user
+        manager = self.update_manager
+        if not message or not chat or not user or not manager:
+            if message:
+                await message.reply_text("There is no active ZIP update manager.")
+            return
+        try:
+            cancelled = manager.cancel_upload(user.id, chat.id)
+        except PermissionError as exc:
+            await message.reply_text(str(exc))
+            return
+        if cancelled:
+            await self.db.audit(user.id, "telegram_zip_update.upload_cancelled", "pending", "cancelled")
+        await message.reply_text(
+            "Pending ZIP upload cancelled." if cancelled else "There is no active upload session to cancel."
+        )
+
+    async def _receive_update_zip(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        message, chat, user = update.effective_message, update.effective_chat, update.effective_user
+        manager = self.update_manager
+        if not message or not chat or not user or not message.document or not manager:
+            return
+        if not await self._gate(update, admin=True):
+            return
+        document = message.document
+        if chat.id != self.settings.admin_chat_id:
+            await message.reply_text("This upload session only accepts files in the configured ADMIN_CHAT_ID.")
+            return
+        filename = safe_filename(document.file_name or "")
+        if not filename.lower().endswith(".zip"):
+            manager.cancel_upload(user.id, chat.id)
+            await message.reply_text("Only a ZIP document is accepted; the upload session was cancelled.")
+            return
+        if document.file_size is not None and document.file_size > self.settings.max_upload_bytes:
+            manager.cancel_upload(user.id, chat.id)
+            await message.reply_text("The ZIP exceeds MAX_UPLOAD_BYTES; the upload session was cancelled.")
+            return
+        await message.reply_text("ZIP received. Validating archive paths, types, sizes and contents…")
+        try:
+            archive_data = await self._download(
+                context, document.file_id, self.settings.max_upload_bytes,
+            )
+            staged = await asyncio.to_thread(
+                manager.prepare, user.id, chat.id, filename, archive_data,
+            )
+        except (MalwareDetected, AntivirusUnavailable) as exc:
+            await message.reply_text(self._upload_scan_message(exc))
+            return
+        except (PermissionError, ValueError, OSError, RuntimeError) as exc:
+            await self.db.audit(
+                user.id, "telegram_zip_update.validation_rejected", filename[:120],
+                type(exc).__name__,
+            )
+            await message.reply_text(
+                f"ZIP rejected; no staging or production files were changed: {str(exc)[:500]}"
+            )
+            return
+        await self.db.audit(
+            user.id, "telegram_zip_update.staged", staged.update_id,
+            f"archive sha256={staged.archive_sha256[:32]}",
+        )
+        await message.reply_text("Archive validated and staged. Running syntax validation and isolated tests…")
+        try:
+            await manager.run_tests(staged, getattr(self.actions, "sandbox", None))
+        except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
+            manager.mark_tests_blocked(staged, exc)
+        await self.db.audit(
+            user.id, "telegram_zip_update.validation_finished", staged.update_id,
+            f"syntax={staged.syntax_status}; tests={staged.test_status}; manifest={staged.release_hash[:32]}",
+        )
+        await self._send_update_preview(message, staged)
+
+    async def _send_update_preview(self, message: Any, staged: StagedUpdate) -> None:
+        counts = {
+            action: sum(item.action == action for item in staged.files)
+            for action in ("added", "changed", "removed")
+        }
+        changed_files = [
+            f"{item.action.upper()} {item.path}"
+            for item in staged.files if item.action != "unchanged"
+        ]
+        files_text = "\n".join(changed_files[:16]) or "No file changes."
+        if len(changed_files) > 16:
+            files_text += f"\n… and {len(changed_files) - 16} more."
+        deployment_status = "BLOCKED — staging approval is required first."
+        production_button = None
+        manager = self.update_manager
+        if not manager or not manager.deployment_enabled:
+            deployment_status = "BLOCKED — deployment is disabled or not configured."
+        elif staged.state == "approved":
+            try:
+                _, eligibility_issues = manager.production_eligibility(
+                    staged.update_id, staged.release_hash[:UPDATE_CALLBACK_HASH_PREFIX_LENGTH],
+                    staged.uploader_id, staged.chat_id,
+                )
+                if eligibility_issues:
+                    deployment_status = "BLOCKED — " + " ".join(eligibility_issues)
+                else:
+                    client = TelegramDeploymentClient(manager.deployment_socket_path)
+                    readiness = await client.preflight()
+                    if readiness.get("ready") is True:
+                        deployment_status = (
+                            "READY — backup: " + str(readiness.get("backup_status", "unknown"))
+                            + "; rollback: " + str(readiness.get("rollback_status", "unknown"))
+                        )
+                        production_button = InlineKeyboardButton(
+                            "Approve production deployment",
+                            callback_data=(
+                                f"zipupd:deploy:{staged.update_id}:"
+                                f"{staged.release_hash[:UPDATE_CALLBACK_HASH_PREFIX_LENGTH]}"
+                            ),
+                        )
+                    else:
+                        issues = readiness.get("issues", [])
+                        deployment_status = (
+                            "BLOCKED — deployment host prerequisites failed"
+                            + (": " + ", ".join(str(issue)[:80] for issue in issues[:4]) if issues else ".")
+                        )
+            except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
+                deployment_status = (
+                    "BLOCKED — restricted deployment broker unavailable "
+                    f"({type(exc).__name__})."
+                )
+        text = (
+            f"ZIP staging report · update {staged.update_id}\n"
+            f"Archive: {staged.archive_name} · {staged.archive_size} bytes\n"
+            f"Files: {counts['added']} added, {counts['changed']} changed, {counts['removed']} removed\n"
+            f"Protected paths: PASS · syntax: {staged.syntax_status} · isolated tests: {staged.test_status}\n"
+            f"Test result: {staged.test_summary[:500]}\n"
+            f"Dependency changes: {', '.join(staged.dependency_changes) or 'none'}\n"
+            f"Warnings: {' '.join(staged.security_warnings)}\n"
+            f"Release manifest SHA-256: {staged.release_hash}\n"
+            f"Production deployment preflight: {deployment_status}\n"
+            f"Affected files:\n{files_text}"
+        )
+        review_button = InlineKeyboardButton(
+            "Review manifest",
+            callback_data=(
+                f"zipupd:review:{staged.update_id}:"
+                f"{staged.release_hash[:UPDATE_CALLBACK_HASH_PREFIX_LENGTH]}"
+            ),
+        )
+        decision_buttons = [
+            InlineKeyboardButton(
+                "Reject",
+                callback_data=(
+                    f"zipupd:reject:{staged.update_id}:"
+                    f"{staged.release_hash[:UPDATE_CALLBACK_HASH_PREFIX_LENGTH]}"
+                ),
+            ),
+            InlineKeyboardButton(
+                "Cancel staged release",
+                callback_data=(
+                    f"zipupd:cancel:{staged.update_id}:"
+                    f"{staged.release_hash[:UPDATE_CALLBACK_HASH_PREFIX_LENGTH]}"
+                ),
+            ),
+        ]
+        rows = [[review_button]]
+        if staged.syntax_status == "PASS" and staged.test_status == "PASS":
+            rows.append([InlineKeyboardButton(
+                "Approve staging only",
+                callback_data=(
+                    f"zipupd:approve:{staged.update_id}:"
+                    f"{staged.release_hash[:UPDATE_CALLBACK_HASH_PREFIX_LENGTH]}"
+                ),
+            )])
+        if production_button:
+            rows.append([production_button])
+        rows.append(decision_buttons)
+        keyboard = InlineKeyboardMarkup(rows)
+        await message.reply_text(text[:3900], reply_markup=keyboard)
+
+    async def notify_deployment_results(self, app: Application) -> None:
+        manager = self.update_manager
+        if not manager or not manager.deployment_enabled:
+            return
+        client = TelegramDeploymentClient(manager.deployment_socket_path)
+        try:
+            results = await client.recent_results()
+        except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
+            logger.warning("Could not retrieve deployment results (%s)", type(exc).__name__)
+            return
+        for result in results:
+            update_id = str(result.get("update_id", ""))[:8]
+            state = str(result.get("state", "unknown"))[:32]
+            manifest_hash = str(result.get("manifest_hash", ""))[:64]
+            failure_code = str(result.get("failure_code", ""))[:64]
+            approved_by = result.get("administrator_id")
+            text = (
+                f"ZIP deployment result · release {update_id}\n"
+                f"Outcome: {state}\n"
+                f"Reviewed manifest SHA-256: {manifest_hash or 'unavailable'}\n"
+                f"Recovery: {'verified rollback completed' if state == 'rolled_back' else 'manual recovery required' if state == 'rollback_failed' else 'not required'}"
+                + (f"\nFailure code: {failure_code}" if failure_code else "")
+            )
+            try:
+                await app.bot.send_message(chat_id=self.settings.admin_chat_id, text=text[:1000])
+                await client.acknowledge(update_id)
+                if isinstance(approved_by, int):
+                    await self.db.audit(
+                        approved_by, f"telegram_zip_update.deployment_{state}",
+                        update_id, f"manifest={manifest_hash[:32]}",
+                    )
+            except (TelegramError, OSError, RuntimeError, TimeoutError, ValueError) as exc:
+                logger.warning(
+                    "Could not deliver deployment result for release %s (%s)",
+                    update_id, type(exc).__name__,
+                )
+
+    async def update_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        del context
+        query = update.callback_query
+        chat, user = update.effective_chat, update.effective_user
+        manager = self.update_manager
+        if not query or not chat or not user or not manager:
+            return
+        if (
+            not is_admin(self.settings, user.id)
+            or chat.id != self.settings.admin_chat_id
+            or await self.db.is_user_blocked(user.id)
+        ):
+            await query.answer("Unauthorized update action.", show_alert=True)
+            return
+        parts = str(query.data or "").split(":")
+        if len(parts) != 4:
+            await query.answer("Invalid update action.", show_alert=True)
+            return
+        _, action, update_id, hash_prefix = parts
+        try:
+            if action == "review":
+                staged = manager.get_update(update_id, user.id, chat.id)
+                if (
+                    not staged
+                    or staged.release_hash[:UPDATE_CALLBACK_HASH_PREFIX_LENGTH] != hash_prefix
+                ):
+                    raise ValueError("This staged release is missing, expired, or has changed.")
+            elif action in {"approve", "reject"}:
+                staged = manager.decide(
+                    update_id, hash_prefix, user.id, chat.id, approve=action == "approve",
+                )
+                await self.db.audit(
+                    user.id, f"telegram_zip_update.{staged.state}", update_id,
+                    f"manifest={staged.release_hash[:32]}",
+                )
+            elif action == "cancel":
+                staged = manager.cancel_staged(update_id, hash_prefix, user.id, chat.id)
+                await self.db.audit(
+                    user.id, "telegram_zip_update.cancelled", update_id,
+                    f"manifest={staged.release_hash[:32]}",
+                )
+            elif action == "deploy":
+                staged = manager.begin_production_deployment(
+                    update_id, hash_prefix, user.id, chat.id,
+                )
+                try:
+                    result = await TelegramDeploymentClient(
+                        manager.deployment_socket_path,
+                    ).deploy(
+                        staged.update_id, staged.release_hash, staged.archive_sha256, user.id,
+                    )
+                    accepted = result.get("accepted") is True
+                    outcome = (
+                        "Deployment broker accepted the exact reviewed release."
+                        if accepted else "Deployment broker did not accept the request."
+                    )
+                except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
+                    accepted = False
+                    outcome = f"Deployment request failed ({type(exc).__name__})."
+                staged = manager.finish_production_deployment(
+                    update_id, accepted=accepted, result=outcome,
+                )
+                await self.db.audit(
+                    user.id, "telegram_zip_update.production_approval",
+                    update_id, f"manifest={staged.release_hash[:32]}",
+                )
+                await self.db.audit(
+                    user.id, f"telegram_zip_update.deployment_{staged.deployment_state}",
+                    update_id, redact_secrets(outcome),
+                )
+            else:
+                raise ValueError("Unknown update action.")
+        except (PermissionError, RuntimeError, ValueError) as exc:
+            await query.answer(str(exc)[:180], show_alert=True)
+            return
+        await query.answer()
+        if action == "review":
+            report = manager.manifest_text(staged)
+            await query.message.reply_document(
+                InputFile(
+                    io.BytesIO(report.encode("utf-8")),
+                    filename=f"update-manifest-{staged.update_id}.txt",
+                ),
+                caption=f"Complete manifest for staged update {staged.update_id}.",
+            )
+        else:
+            result = {
+                "approve": (
+                    "Staging review approved for this exact manifest. This is not production approval; "
+                    "production deployment requires a separate explicit approval."
+                ),
+                "reject": "Staged release rejected and its temporary files were removed.",
+                "cancel": "Staged release cancelled and its temporary files were removed.",
+                "deploy": staged.deployment_result,
+            }[action]
+            await query.message.reply_text(result)
+            if action == "approve":
+                await self._send_update_preview(query.message, staged)
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._gate(update):
@@ -2414,6 +2779,7 @@ class BotHandlers:
             "/import_sticker_set NAME, /cancel_sticker_import — import or cancel a pack\n"
             "/sticker_stats, /sticker_search, /sticker_review, "
             "/sticker_categorize ID CATEGORY [tags], /sticker_export\n"
+            "/update, /update_cancel — validate and stage a ZIP for review; no automatic deployment\n"
             "/models and /model — model catalog and selection\n"
             "/vm status|logs|restart — service control\n"
             "Reply to a support request in this chat to send a formatted response."
@@ -2871,6 +3237,11 @@ class BotHandlers:
             except sqlite3.Error as exc:
                 logger.warning("Could not retain group message (%s)", type(exc).__name__)
         if msg.text and msg.text.startswith("/"):
+            return
+        manager = getattr(self, "update_manager", None)
+        document = getattr(msg, "document", None)
+        if document and manager and manager.has_upload_session(user.id):
+            await self._receive_update_zip(update, context)
             return
 
         # Replies in the configured admin chat are routed through the persistent message map.

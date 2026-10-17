@@ -1,0 +1,12 @@
+[Unit]
+Description=Restricted Enan Ultra release deployment socket
+
+[Socket]
+ListenStream=/run/telegram-ai-deploy.sock
+SocketUser=root
+SocketGroup=enan-ultra
+SocketMode=0660
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target

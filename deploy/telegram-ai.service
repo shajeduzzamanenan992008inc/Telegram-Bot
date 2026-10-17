@@ -11,6 +11,7 @@ SupplementaryGroups=clamav
 WorkingDirectory=/opt/enan-ultra
 EnvironmentFile=/etc/telegram-ai/bot.env
 Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/opt/enan-ultra/src
 ExecStart=/opt/enan-ultra/.venv/bin/python -m enan_ultra
 Restart=always
 RestartSec=5
