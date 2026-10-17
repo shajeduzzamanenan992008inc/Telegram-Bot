@@ -420,7 +420,7 @@ This section appends the local bug-fix work to the existing readiness history. N
 - One non-isolated matrix attempt accidentally selected the existing Python 3.12 environment without project dependencies and stopped during collection with 16 import errors and zero tests run. The isolated reruns above passed; this did not establish a source test failure.
 - ZIP, scanner, provider, authorization, deduplication, installation-idempotency, deployment-path, sticker, and theme tests use local fixtures or mocks. Tests did not call Telegram, ClamAV, production systemd, Azure, or the production deployment broker.
 - The original run supplied in chat was unavailable to inspect, so its specific traceback remains unconfirmed. After push commit `9b46cea44d3729956972673b798c5cc09031acd8`, GitHub Actions run [39040476917](https://github.com/shajeduzzamanenan992008inc/Telegram-Bot/actions/runs/39040476917) completed successfully: all five Python test jobs (3.11–3.15) and the quality job passed.
-- The follow-up report commit `d6f97bf5f1f11746839e70481fb002792a5c7da3` also passed all six jobs in [run 39040628340](https://github.com/shajeduzzamanenan992008inc/Telegram-Bot/actions/runs/39040628340). CI for the two newly added tests will be checked after their commit is pushed.
+- The test/report commit `05eb7805028a1420338b9b8ba80cf544f446f3da` passed all six jobs in [run 39041606845](https://github.com/shajeduzzamanenan992008inc/Telegram-Bot/actions/runs/39041606845): Python 3.11–3.15 tests and quality.
 
 ### Remaining production gates
 
