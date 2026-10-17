@@ -3195,8 +3195,10 @@ class BotHandlers:
         if msg is None or update.effective_user is None:
             return
         user, chat = update.effective_user, update.effective_chat
-        if msg.message_id in self._handled_update_document_messages:
-            self._handled_update_document_messages.discard(msg.message_id)
+        handled_document_messages = getattr(self, "_handled_update_document_messages", None)
+        message_id = getattr(msg, "message_id", None)
+        if handled_document_messages is not None and message_id in handled_document_messages:
+            handled_document_messages.discard(message_id)
             return
         sticker_collector = getattr(self, "sticker_collector", None)
         if (
