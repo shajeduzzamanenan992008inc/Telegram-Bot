@@ -816,8 +816,13 @@ def test_command_help_and_menu_are_in_english() -> None:
         await handlers.register_commands(app)
         commands = set_my_commands.await_args.args[0]
         assert all(not any("\u0980" <= char <= "\u09ff" for char in command.description) for command in commands)
+        assert not {"update", "block", "unblock"} & {command.command for command in commands}
         assert {command.command for command in commands} >= {
             "help", "clear", "reset", "document", "knowledge", "research", "snooze",
+        }
+        from enan_ultra.runtime import _admin_command_menu
+        assert {"update", "block", "unblock"} <= {
+            command.command for command in _admin_command_menu()
         }
 
     asyncio.run(scenario())
@@ -1042,7 +1047,7 @@ def test_provider_fallback_and_local_only_never_call_cloud() -> None:
         router = object.__new__(ProviderRouter)
         router.settings = SimpleNamespace(
             provider_order=("openrouter", "groq", "gemini", "cloudflare", "huggingface"),
-            fallback_models=(),
+            fallback_models=(), default_model="auto",
         )
         router.openrouter = None
         cloud = _FakeAdapter("openrouter", "cloud-model", fail=True)
@@ -1065,6 +1070,27 @@ def test_provider_fallback_and_local_only_never_call_cloud() -> None:
         assert result.model == "ollama::local-model"
         assert cloud.calls == groq.calls == gemini.calls == cloudflare.calls == huggingface.calls == 0
         assert local.calls == 1
+
+        local.calls = 0
+        result = await router.complete([], primary_model=None, local_only=False)
+        assert result.model == "ollama::local-model"
+        assert local.calls == 1
+        assert cloud.calls == groq.calls == gemini.calls == cloudflare.calls == huggingface.calls == 0
+
+        local.calls = 0
+        local.fail = True
+        groq.fail = False
+        router._circuits.clear()
+        result = await router.complete([], primary_model=None, local_only=False)
+        assert result.model == "groq::groq-model"
+        assert local.calls == 1
+        assert cloud.calls == groq.calls == 1
+        assert gemini.calls == cloudflare.calls == huggingface.calls == 0
+        local.fail = False
+        groq.fail = True
+
+        router.adapters.pop("ollama")
+        assert router.default_model() == "openrouter::cloud-model"
 
     asyncio.run(scenario())
 

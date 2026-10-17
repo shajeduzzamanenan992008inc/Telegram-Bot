@@ -14,13 +14,19 @@ class MalwareDetected(Exception):
 class AntivirusUnavailable(RuntimeError):
     """Raised when an enabled antivirus scanner cannot produce a clean result."""
 
+    def __init__(self, message: str, *, category: str = "unavailable") -> None:
+        super().__init__(message)
+        self.category = category
+
 
 async def scan_upload(
     data: bytes, socket_path: str | Path, *, timeout: float = 30.0,
 ) -> None:
     path = str(socket_path)
     if not path:
-        raise AntivirusUnavailable("ClamAV socket path is not configured")
+        raise AntivirusUnavailable(
+            "ClamAV socket path is not configured", category="not_configured",
+        )
     writer: asyncio.StreamWriter | None = None
     try:
         reader, writer = await asyncio.wait_for(
@@ -39,7 +45,17 @@ async def scan_upload(
         AttributeError, OSError, asyncio.TimeoutError,
         asyncio.IncompleteReadError, asyncio.LimitOverrunError,
     ) as exc:
-        raise AntivirusUnavailable("ClamAV did not complete the upload scan") from exc
+        if isinstance(exc, asyncio.TimeoutError):
+            category = "timeout"
+        elif isinstance(exc, FileNotFoundError):
+            category = "socket_missing"
+        elif isinstance(exc, OSError):
+            category = "socket_unreachable"
+        else:
+            category = "incomplete_response"
+        raise AntivirusUnavailable(
+            "ClamAV did not complete the upload scan", category=category,
+        ) from exc
     finally:
         if writer is not None:
             writer.close()
@@ -52,4 +68,7 @@ async def scan_upload(
     if message.endswith(" FOUND") and message.startswith("stream: "):
         raise MalwareDetected("ClamAV detected malware in an upload")
     if message != "stream: OK":
-        raise AntivirusUnavailable("ClamAV returned an invalid or unsuccessful scan result")
+        raise AntivirusUnavailable(
+            "ClamAV returned an invalid or unsuccessful scan result",
+            category="invalid_response",
+        )

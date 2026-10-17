@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
+import json
+import os
 import stat
 import time
 import zipfile
@@ -92,6 +95,172 @@ def test_admin_chat_scope_and_upload_expiry(tmp_path: Path) -> None:
     assert not manager.has_upload_session(ADMIN_ID)
     with pytest.raises(ValueError, match="No active"):
         manager.prepare(ADMIN_ID, ADMIN_CHAT, "release.zip", _zip(VALID_FILES))
+
+
+def test_quarantine_directory_is_private_and_expired_uploads_are_removed(tmp_path: Path) -> None:
+    manager = _manager(tmp_path)
+    quarantine = manager.quarantine_directory()
+    assert quarantine == manager.staging_parent / "quarantine"
+    assert quarantine.is_dir()
+    if os.name != "nt":
+        assert stat.S_IMODE(quarantine.stat().st_mode) == 0o700
+    old_upload = quarantine / "old-upload.zip"
+    old_upload.write_bytes(b"quarantined")
+    old_time = time.time() - 25 * 60 * 60
+    os.utime(old_upload, (old_time, old_time))
+    manager.cleanup_expired()
+    assert not old_upload.exists()
+
+
+def test_active_telegram_zip_handler_scans_and_stages_without_touching_live_tree(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    from enan_ultra import handlers as handlers_module
+
+    archive_data = _zip(VALID_FILES)
+    manager = _manager(tmp_path, sandbox_enabled=False)
+    live_runtime = manager.project_root / "src" / "enan_ultra" / "runtime.py"
+    handler = BotHandlers.__new__(BotHandlers)
+    handler.settings = SimpleNamespace(
+        admin_id=ADMIN_ID, admin_chat_id=ADMIN_CHAT, max_upload_bytes=2_000_000,
+        clamav_socket_path="/run/clamav/clamd.ctl", clamav_scan_timeout_seconds=1,
+        malware_scan_enabled=False,
+    )
+    handler.update_manager = manager
+    handler._update_lock = asyncio.Lock()
+    handler.actions = SimpleNamespace(sandbox=None)
+    handler.db = SimpleNamespace(audit=AsyncMock())
+    handler._send_update_preview = AsyncMock()
+
+    scanned: list[bytes] = []
+
+    async def clean_scan(data: bytes, _socket: str, **_kwargs) -> None:
+        scanned.append(data)
+
+    monkeypatch.setattr(handlers_module, "scan_upload", clean_scan)
+
+    class TelegramFile:
+        file_size = len(archive_data)
+
+        async def download_to_drive(self, *, custom_path):
+            Path(custom_path).write_bytes(archive_data)
+
+    class Bot:
+        async def get_file(self, _file_id: str):
+            return TelegramFile()
+
+    reply = AsyncMock()
+    message = SimpleNamespace(
+        document=SimpleNamespace(file_name="release.zip", file_size=len(archive_data), file_id="file-id"),
+        message_id=42, reply_text=reply,
+    )
+    update = SimpleNamespace(
+        effective_message=message,
+        effective_chat=SimpleNamespace(id=ADMIN_CHAT),
+        effective_user=SimpleNamespace(id=ADMIN_ID),
+    )
+
+    asyncio.run(handler._receive_update_zip(update, SimpleNamespace(bot=Bot())))
+
+    assert scanned == [archive_data]
+    assert live_runtime.read_text(encoding="utf-8") == "# old runtime\n"
+    assert len(manager.updates) == 1
+    staged = next(iter(manager.updates.values()))
+    assert staged.test_status == "BLOCKED"
+    assert handler._send_update_preview.await_count == 1
+    assert list(manager.quarantine_directory().iterdir()) == []
+
+
+def test_admin_zip_documents_with_or_without_update_caption_enter_staging() -> None:
+    handler = BotHandlers.__new__(BotHandlers)
+    handler.settings = SimpleNamespace(
+        admin_id=ADMIN_ID, admin_chat_id=ADMIN_CHAT,
+        effective_admin_user_ids=frozenset({ADMIN_ID}),
+    )
+    handler.sticker_collector = None
+    handler._receive_update_zip = AsyncMock()
+
+    async def route(caption: str | None, message_id: int) -> None:
+        message = SimpleNamespace(
+            text=None, caption=caption, message_id=message_id, reply_to_message=None,
+            document=SimpleNamespace(file_name="release.zip"),
+        )
+        update = SimpleNamespace(
+            effective_message=message,
+            effective_chat=SimpleNamespace(id=ADMIN_CHAT, type="private"),
+            effective_user=SimpleNamespace(id=ADMIN_ID, is_bot=False),
+        )
+        await handler.on_message(update, SimpleNamespace())
+
+    async def scenario() -> None:
+        await route("/update", 1)
+        await route(None, 2)
+        assert handler._receive_update_zip.await_count == 2
+
+    asyncio.run(scenario())
+
+
+def test_active_telegram_zip_handler_keeps_upload_quarantined_when_scanner_is_unavailable(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    from enan_ultra import handlers as handlers_module
+    from enan_ultra.services.antivirus import AntivirusUnavailable
+
+    archive_data = _zip(VALID_FILES)
+    manager = _manager(tmp_path)
+    handler = BotHandlers.__new__(BotHandlers)
+    handler.settings = SimpleNamespace(
+        admin_id=ADMIN_ID, admin_chat_id=ADMIN_CHAT, max_upload_bytes=2_000_000,
+        clamav_socket_path="/run/clamav/clamd.ctl", clamav_scan_timeout_seconds=1,
+        malware_scan_enabled=False,
+    )
+    handler.update_manager = manager
+    handler._update_lock = asyncio.Lock()
+    handler.actions = SimpleNamespace(sandbox=None)
+    handler.db = SimpleNamespace(audit=AsyncMock())
+    handler._send_update_preview = AsyncMock()
+
+    async def unavailable_scan(_data: bytes, _socket: str, **_kwargs) -> None:
+        raise AntivirusUnavailable("socket unavailable", category="socket_missing")
+
+    monkeypatch.setattr(handlers_module, "scan_upload", unavailable_scan)
+
+    class TelegramFile:
+        file_size = len(archive_data)
+
+        async def download_to_drive(self, *, custom_path):
+            Path(custom_path).write_bytes(archive_data)
+
+    class Bot:
+        async def get_file(self, _file_id: str):
+            return TelegramFile()
+
+    reply = AsyncMock()
+    message = SimpleNamespace(
+        document=SimpleNamespace(file_name="release.zip", file_size=len(archive_data), file_id="file-id"),
+        message_id=43, reply_text=reply,
+    )
+    update = SimpleNamespace(
+        effective_message=message,
+        effective_chat=SimpleNamespace(id=ADMIN_CHAT),
+        effective_user=SimpleNamespace(id=ADMIN_ID),
+    )
+
+    asyncio.run(handler._receive_update_zip(update, SimpleNamespace(bot=Bot())))
+
+    quarantined = list(manager.quarantine_directory().glob("*.zip"))
+    assert len(quarantined) == 1
+    if os.name != "nt":
+        assert stat.S_IMODE(quarantined[0].stat().st_mode) == 0o600
+        record_path = quarantined[0].with_suffix(".json")
+        assert stat.S_IMODE(record_path.stat().st_mode) == 0o600
+    else:
+        record_path = quarantined[0].with_suffix(".json")
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record["sha256"] == hashlib.sha256(archive_data).hexdigest()
+    assert record["state"] == "SCAN_FAILED:socket_missing"
+    assert not manager.updates
+    assert "retained in quarantine" in reply.await_args.args[0]
 
 
 def test_wrong_chat_upload_is_rejected(tmp_path: Path) -> None:
@@ -301,7 +470,8 @@ def test_unauthorized_and_replayed_telegram_approval_callbacks_are_rejected(tmp_
     handler = BotHandlers.__new__(BotHandlers)
     handler.update_manager = manager
     handler.settings = SimpleNamespace(
-        effective_admin_user_ids=frozenset({ADMIN_ID}), admin_chat_id=ADMIN_CHAT,
+        admin_id=ADMIN_ID, effective_admin_user_ids=frozenset({ADMIN_ID}),
+        admin_chat_id=ADMIN_CHAT,
     )
     handler.db = SimpleNamespace(is_user_blocked=AsyncMock(return_value=False), audit=AsyncMock())
 
@@ -463,7 +633,8 @@ def test_production_callback_authorizes_exact_release_and_rejects_replay(
     handler = BotHandlers.__new__(BotHandlers)
     handler.update_manager = manager
     handler.settings = SimpleNamespace(
-        effective_admin_user_ids=frozenset({ADMIN_ID}), admin_chat_id=ADMIN_CHAT,
+        admin_id=ADMIN_ID, effective_admin_user_ids=frozenset({ADMIN_ID}),
+        admin_chat_id=ADMIN_CHAT,
     )
     handler.db = SimpleNamespace(is_user_blocked=AsyncMock(return_value=False), audit=AsyncMock())
 

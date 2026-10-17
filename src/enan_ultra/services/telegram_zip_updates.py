@@ -150,6 +150,34 @@ class TelegramZipUpdateManager:
     def cleanup_expired(self) -> None:
         with self._lock:
             self._expire_locked()
+            quarantine = self.staging_parent / "quarantine"
+            if quarantine.is_symlink() or not quarantine.is_dir():
+                return
+            cutoff = time.time() - 24 * 60 * 60
+            for path in quarantine.iterdir():
+                try:
+                    if (
+                        path.suffix.lower() in {".zip", ".json"}
+                        and path.is_file() and not path.is_symlink()
+                        and path.stat().st_mtime < cutoff
+                    ):
+                        path.unlink()
+                except OSError:
+                    continue
+
+    def quarantine_directory(self) -> Path:
+        """Return the private holding directory for unscanned or invalid admin uploads."""
+        with self._lock:
+            self._create_staging_parent()
+            quarantine = self.staging_parent / "quarantine"
+            if quarantine.exists() and (quarantine.is_symlink() or not quarantine.is_dir()):
+                raise RuntimeError("The update quarantine path is not a private directory.")
+            quarantine.mkdir(mode=0o700, exist_ok=True)
+            if quarantine.is_symlink() or not quarantine.is_dir():
+                raise RuntimeError("The update quarantine path is not a private directory.")
+            if os.name != "nt":
+                quarantine.chmod(0o700)
+            return quarantine
 
     def start_upload(self, user_id: int, chat_id: int) -> UploadSession:
         with self._lock:

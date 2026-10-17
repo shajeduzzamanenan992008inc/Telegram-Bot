@@ -564,6 +564,9 @@ class ProviderRouter:
             provider, model = self._parse(self.settings.default_model)
             if provider in self.adapters and model:
                 return self._label(provider, model)
+        local = self.adapters.get("ollama")
+        if local and local.configured_model():
+            return self._label("ollama", local.configured_model())
         for provider in self.settings.provider_order:
             adapter = self.adapters.get(provider)
             if adapter and adapter.configured_model():
