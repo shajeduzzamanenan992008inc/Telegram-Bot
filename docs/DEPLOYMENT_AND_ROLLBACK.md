@@ -4,7 +4,7 @@
 
 The Telegram evolution workflow cannot change `/opt/enan-ultra`, invoke systemd, run an arbitrary deployment command, or claim a service restart succeeded. `/evolve_deploy_approve` records the distinct admin decision for an exact patch hash; the configured operator release procedure remains the deployment mechanism.
 
-The administrator `/update` workflow has isolated staging approval followed by a distinct production approval. A separate root-owned broker (not the Telegram process) may apply allowlisted `src/enan_ultra/` files to the existing flat checkout and restart only `telegram-ai.service`. It does not install dependencies, change its protected approval/security/runtime files, alter databases, or run migrations. See [Telegram ZIP updates](./TELEGRAM_ZIP_UPDATES.md) and [update security](./UPDATE_SECURITY.md).
+Telegram `/update` now directly overlays a validated admin ZIP onto the project root and replaces the Python process. It does not use the broker described below and does not provide a service health check or automatic rollback. The separate root-owned broker remains a disabled operator capability for its fixed `/opt/enan-ultra` and `telegram-ai.service` layout; it must not be treated as the path used by `/update`. See [Telegram ZIP updates](./TELEGRAM_ZIP_UPDATES.md) and [update security](./UPDATE_SECURITY.md).
 
 ## Broker gates and runtime layout
 

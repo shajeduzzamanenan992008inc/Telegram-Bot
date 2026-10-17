@@ -2,7 +2,7 @@
 
 ## Configure access
 
-Set `ADMIN_CHAT_ID` to a private admin group or chat, and `ADMIN_USER_IDS` to the numeric Telegram user IDs allowed to administer the bot. Keep all credentials in the protected environment file. The installer keeps `/etc/telegram-ai/bot.env` owned by root with mode `0600`.
+Set `ADMIN_CHAT_ID` to a private admin group or chat, and `ADMIN_USER_IDS` to the numeric Telegram user IDs allowed to administer the bot. Set `ADMIN_ID` to the single user allowed to apply ZIP updates with `/update`; if omitted, the lowest numeric ID from `ADMIN_USER_IDS` is used. Keep all credentials in the protected environment file. The installer keeps `/etc/telegram-ai/bot.env` owned by root with mode `0600`.
 
 Admin permissions are enforced by handlers through `is_admin()`; a username or a reply in the admin chat is not sufficient by itself. Support reply routing also requires that the replied-to message ID exists in the database map.
 

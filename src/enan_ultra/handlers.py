@@ -8,9 +8,12 @@ import hashlib
 import io
 import json
 import logging
+import os
 import re
 import sqlite3
+import sys
 import time
+import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -54,6 +57,9 @@ from enan_ultra.services.theme_engine import AdaptiveThemeEngine
 from enan_ultra.services.conversation_style import decorate_reply, StickerSelector
 from enan_ultra.services.telegram_zip_updates import (
     StagedUpdate, TelegramZipUpdateManager, UPDATE_CALLBACK_HASH_PREFIX_LENGTH, redact_secrets,
+)
+from enan_ultra.services.telegram_direct_update import (
+    UPDATE_ARCHIVE_PATH, extract_update_archive,
 )
 from enan_ultra.services.telegram_deployment import TelegramDeploymentClient
 from enan_ultra.sticker_collector import (
@@ -111,6 +117,8 @@ class BotHandlers:
         self.partial_generations: dict[int, str] = {}
         self._malware_alert_lock = asyncio.Lock()
         self._malware_alert_last_sent = 0.0
+        self._update_lock = asyncio.Lock()
+        self._handled_update_document_messages: set[int] = set()
         self.update_manager: TelegramZipUpdateManager | None = None
         database_path = getattr(settings, "database_path", None)
         if (
@@ -177,18 +185,11 @@ class BotHandlers:
             "evolve_cancel": self.evolve_cancel,
             "learning_status": self.learning_status, "learning_pause": self.learning_pause,
             "learning_resume": self.learning_resume,
-            "update": self.update, "update_cancel": self.update_cancel,
+            "update": self.update,
         }
         for name, callback in commands.items():
             app.add_handler(CommandHandler(name, callback), group=0)
         app.add_handler(CallbackQueryHandler(self.menu_callback, pattern=r"^main:(help|export|cancel)$"), group=0)
-        app.add_handler(
-            CallbackQueryHandler(
-                self.update_callback,
-                pattern=r"^zipupd:(review|approve|reject|cancel|deploy):",
-            ),
-            group=0,
-        )
         app.add_handler(MessageHandler(filters.ALL, self.on_message), group=1)
         app.add_handler(TypeHandler(Update, self.on_extension_update), group=-1)
 
@@ -247,8 +248,7 @@ class BotHandlers:
             ("learning_status", "Show learning signal status"),
             ("learning_pause", "Pause new improvement signal aggregation"),
             ("learning_resume", "Resume improvement signal aggregation"),
-            ("update", "Stage a project ZIP for secure review"),
-            ("update_cancel", "Cancel a pending ZIP upload"),
+            ("update", "Apply an admin ZIP update and restart the bot"),
         ]
         try:
             await app.bot.set_my_commands([BotCommand(command, description) for command, description in names])
@@ -275,106 +275,85 @@ class BotHandlers:
         return True
 
     async def update(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        del context
-        if not await self._gate(update, admin=True):
+        message, user = update.effective_message, update.effective_user
+        if not message or not user:
             return
-        message, chat, user = update.effective_message, update.effective_chat, update.effective_user
-        manager = getattr(self, "update_manager", None)
-        if not message or not chat or not user or not manager:
-            if message:
-                await message.reply_text("ZIP staging is unavailable because the update manager is not configured.")
+        if user.id != self.settings.admin_id:
+            await message.reply_text("❌ শুধু ADMIN_ID নির্ধারিত ব্যবহারকারী /update চালাতে পারবেন।")
             return
-        try:
-            manager.start_upload(user.id, chat.id)
-        except (PermissionError, ValueError) as exc:
-            await message.reply_text(str(exc))
+        document = message.document
+        if document is None and message.reply_to_message is not None:
+            document = message.reply_to_message.document
+        if document is not None:
+            if message.document is not None:
+                self._handled_update_document_messages.add(message.message_id)
+            await self._receive_update_zip(update, context, document=document)
             return
-        await self.db.audit(user.id, "telegram_zip_update.upload_started", "pending", "awaiting ZIP")
         await message.reply_text(
-            "ZIP upload session started (expires in 5 minutes). Send one .zip document in this configured "
-            "admin chat. The archive will be validated and staged only; production files and service "
-            "will not be changed. Cancel with /update_cancel."
-        )
-
-    async def update_cancel(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE,
-    ) -> None:
-        del context
-        if not await self._gate(update, admin=True):
-            return
-        message, chat, user = update.effective_message, update.effective_chat, update.effective_user
-        manager = self.update_manager
-        if not message or not chat or not user or not manager:
-            if message:
-                await message.reply_text("There is no active ZIP update manager.")
-            return
-        try:
-            cancelled = manager.cancel_upload(user.id, chat.id)
-        except PermissionError as exc:
-            await message.reply_text(str(exc))
-            return
-        if cancelled:
-            await self.db.audit(user.id, "telegram_zip_update.upload_cancelled", "pending", "cancelled")
-        await message.reply_text(
-            "Pending ZIP upload cancelled." if cancelled else "There is no active upload session to cancel."
+            "একটি `.zip` ফাইল `/update`-এর সঙ্গে attach করুন, অথবা admin account থেকে ZIP document পাঠান।"
         )
 
     async def _receive_update_zip(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE,
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, *, document: Any | None = None,
     ) -> None:
         message, chat, user = update.effective_message, update.effective_chat, update.effective_user
-        manager = self.update_manager
-        if not message or not chat or not user or not message.document or not manager:
+        document = document or (message.document if message else None)
+        if not message or not chat or not user or not document:
             return
-        if not await self._gate(update, admin=True):
-            return
-        document = message.document
-        if chat.id != self.settings.admin_chat_id:
-            await message.reply_text("This upload session only accepts files in the configured ADMIN_CHAT_ID.")
+        if user.id != self.settings.admin_id:
+            await message.reply_text("❌ শুধু ADMIN_ID নির্ধারিত ব্যবহারকারী update ZIP পাঠাতে পারবেন।")
             return
         filename = safe_filename(document.file_name or "")
         if not filename.lower().endswith(".zip"):
-            manager.cancel_upload(user.id, chat.id)
-            await message.reply_text("Only a ZIP document is accepted; the upload session was cancelled.")
+            await message.reply_text("❌ Update-এর জন্য `.zip` ফাইল পাঠান।")
             return
         if document.file_size is not None and document.file_size > self.settings.max_upload_bytes:
-            manager.cancel_upload(user.id, chat.id)
-            await message.reply_text("The ZIP exceeds MAX_UPLOAD_BYTES; the upload session was cancelled.")
+            await message.reply_text("❌ ZIP ফাইলটি নির্ধারিত upload size limit অতিক্রম করেছে।")
             return
-        await message.reply_text("ZIP received. Validating archive paths, types, sizes and contents…")
-        try:
-            archive_data = await self._download(
-                context, document.file_id, self.settings.max_upload_bytes,
-            )
-            staged = await asyncio.to_thread(
-                manager.prepare, user.id, chat.id, filename, archive_data,
-            )
-        except (MalwareDetected, AntivirusUnavailable) as exc:
-            await message.reply_text(self._upload_scan_message(exc))
-            return
-        except (PermissionError, ValueError, OSError, RuntimeError) as exc:
-            await self.db.audit(
-                user.id, "telegram_zip_update.validation_rejected", filename[:120],
-                type(exc).__name__,
-            )
-            await message.reply_text(
-                f"ZIP rejected; no staging or production files were changed: {str(exc)[:500]}"
-            )
-            return
-        await self.db.audit(
-            user.id, "telegram_zip_update.staged", staged.update_id,
-            f"archive sha256={staged.archive_sha256[:32]}",
-        )
-        await message.reply_text("Archive validated and staged. Running syntax validation and isolated tests…")
-        try:
-            await manager.run_tests(staged, getattr(self.actions, "sandbox", None))
-        except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
-            manager.mark_tests_blocked(staged, exc)
-        await self.db.audit(
-            user.id, "telegram_zip_update.validation_finished", staged.update_id,
-            f"syntax={staged.syntax_status}; tests={staged.test_status}; manifest={staged.release_hash[:32]}",
-        )
-        await self._send_update_preview(message, staged)
+        async with self._update_lock:
+            archive_path = UPDATE_ARCHIVE_PATH
+            try:
+                archive_path.parent.mkdir(parents=True, exist_ok=True)
+                archive_path.unlink(missing_ok=True)
+                telegram_file = await context.bot.get_file(document.file_id)
+                if telegram_file.file_size and telegram_file.file_size > self.settings.max_upload_bytes:
+                    raise ValueError("ZIP exceeds MAX_UPLOAD_BYTES")
+                await telegram_file.download_to_drive(custom_path=archive_path)
+                if archive_path.stat().st_size > self.settings.max_upload_bytes:
+                    raise ValueError("ZIP exceeds MAX_UPLOAD_BYTES")
+                if getattr(self.settings, "malware_scan_enabled", False):
+                    archive_data = await asyncio.to_thread(archive_path.read_bytes)
+                    await scan_upload(
+                        archive_data, self.settings.clamav_socket_path,
+                        timeout=getattr(self.settings, "clamav_scan_timeout_seconds", 60.0),
+                    )
+                if not await asyncio.to_thread(zipfile.is_zipfile, archive_path):
+                    raise ValueError("ফাইলটি valid ZIP archive নয়।")
+
+                await message.reply_text("📦 Extracting update package...")
+                updated_files = await asyncio.to_thread(
+                    extract_update_archive, archive_path, Path.cwd(), self.settings,
+                )
+                logger.info("Administrator %s updated %d project files", user.id, len(updated_files))
+                archive_path.unlink(missing_ok=True)
+                await message.reply_text("✅ Code updated successfully! Restarting bot process...")
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+                raise RuntimeError("Process replacement returned without restarting")
+            except (MalwareDetected, AntivirusUnavailable) as exc:
+                logger.warning("Update ZIP security scan failed (%s)", type(exc).__name__)
+                await message.reply_text(self._upload_scan_message(exc))
+            except Exception as exc:
+                logger.exception("Administrator ZIP update failed (%s)", type(exc).__name__)
+                details = str(exc).strip()
+                reason = f": {details[:240]}" if details else ""
+                await message.reply_text(
+                    f"❌ Update/restart ব্যর্থ হয়েছে ({type(exc).__name__}){reason}।"
+                )
+            finally:
+                try:
+                    archive_path.unlink(missing_ok=True)
+                except OSError as exc:
+                    logger.warning("Could not remove temporary update ZIP (%s)", type(exc).__name__)
 
     async def _send_update_preview(self, message: Any, staged: StagedUpdate) -> None:
         counts = {
@@ -2779,7 +2758,7 @@ class BotHandlers:
             "/import_sticker_set NAME, /cancel_sticker_import — import or cancel a pack\n"
             "/sticker_stats, /sticker_search, /sticker_review, "
             "/sticker_categorize ID CATEGORY [tags], /sticker_export\n"
-            "/update, /update_cancel — validate and stage a ZIP for review; no automatic deployment\n"
+            "/update — apply an admin ZIP package and restart the bot\n"
             "/models and /model — model catalog and selection\n"
             "/vm status|logs|restart — service control\n"
             "Reply to a support request in this chat to send a formatted response."
@@ -3216,6 +3195,9 @@ class BotHandlers:
         if msg is None or update.effective_user is None:
             return
         user, chat = update.effective_user, update.effective_chat
+        if msg.message_id in self._handled_update_document_messages:
+            self._handled_update_document_messages.discard(msg.message_id)
+            return
         sticker_collector = getattr(self, "sticker_collector", None)
         if (
             getattr(msg, "sticker", None) and chat and chat.type == "private"
@@ -3238,11 +3220,18 @@ class BotHandlers:
                 logger.warning("Could not retain group message (%s)", type(exc).__name__)
         if msg.text and msg.text.startswith("/"):
             return
-        manager = getattr(self, "update_manager", None)
         document = getattr(msg, "document", None)
-        if document and manager and manager.has_upload_session(user.id):
-            await self._receive_update_zip(update, context)
-            return
+        if document:
+            caption = (msg.caption or "").strip()
+            caption_command = (
+                caption.split(maxsplit=1)[0].split("@", maxsplit=1)[0].casefold()
+                if caption else ""
+            )
+            is_update_caption = caption_command == "/update"
+            is_zip = (document.file_name or "").casefold().endswith(".zip")
+            if is_update_caption or (is_zip and user.id == self.settings.admin_id):
+                await self._receive_update_zip(update, context)
+                return
 
         # Replies in the configured admin chat are routed through the persistent message map.
         if chat.id == self.settings.admin_chat_id and msg.reply_to_message and is_admin(self.settings, user.id):
