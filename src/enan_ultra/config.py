@@ -127,6 +127,7 @@ class Settings:
     persona_profile: str
     telegram_token: str
     admin_chat_id: int
+    admin_id: int
     admin_user_ids: frozenset[int]
     allowed_user_ids: frozenset[int]
     access_mode: str
@@ -379,6 +380,18 @@ class Settings:
         admin_user_ids = _ids("ADMIN_USER_IDS")
         if not admin_user_ids:
             raise ValueError("ADMIN_USER_IDS must contain at least one Telegram user ID")
+        raw_admin_id = _value("ADMIN_ID")
+        if raw_admin_id:
+            try:
+                admin_id = int(raw_admin_id)
+            except ValueError as exc:
+                raise ValueError("ADMIN_ID must be a numeric Telegram user ID") from exc
+            if admin_id <= 0:
+                raise ValueError("ADMIN_ID must be a positive Telegram user ID")
+        else:
+            # Keep existing installations working while allowing /update to use
+            # one explicit, separately configured administrator.
+            admin_id = min(admin_user_ids)
 
         settings = cls(
             bot_name=_value("BOT_NAME", "Enan Ultra"),
@@ -386,6 +399,7 @@ class Settings:
             persona_profile=_value("AI_PERSONA_PROFILE", "GPT-6 Astra"),
             telegram_token=token,
             admin_chat_id=admin_chat_id,
+            admin_id=admin_id,
             admin_user_ids=admin_user_ids,
             allowed_user_ids=_ids("ALLOWED_USER_IDS"),
             access_mode=access_mode,

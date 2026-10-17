@@ -1,5 +1,9 @@
 # ENAN_ULTRA — Final Deployment Readiness Review
 
+## Workspace update (2026-10-17)
+
+After the reviews below, the active Telegram `/update` handler was changed to accept an admin ZIP, safely overlay project files, preserve protected state, and replace the Python process. This later workspace change is uncommitted and was not tested or deployed. The staged-update and broker test results below describe the earlier implementation and do not verify this direct updater. This note does not change the production NO-GO or Azure evidence in the historical review.
+
 **Review basis:** The Copilot/terminal logs supplied in this conversation. This is a consolidated review of those logs, not an independent connection to the user's Windows workspace or Azure VM.
 
 **Decision: `BLOCKED — DO NOT ENABLE PRODUCTION DEPLOYMENT YET`**
