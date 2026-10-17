@@ -87,8 +87,9 @@ def test_clamav_unavailable_fails_closed(monkeypatch) -> None:
             raise FileNotFoundError("socket not present")
 
         monkeypatch.setattr(asyncio, "open_unix_connection", open_connection, raising=False)
-        with pytest.raises(AntivirusUnavailable):
+        with pytest.raises(AntivirusUnavailable) as error:
             await scan_upload(b"unscanned upload", "/run/clamav/clamd.ctl")
+        assert error.value.category == "socket_missing"
 
     asyncio.run(scenario())
 
@@ -102,8 +103,28 @@ def test_unexpected_clamav_reply_is_not_treated_as_clean(monkeypatch) -> None:
             return reader, FakeWriter()
 
         monkeypatch.setattr(asyncio, "open_unix_connection", open_connection, raising=False)
-        with pytest.raises(AntivirusUnavailable):
+        with pytest.raises(AntivirusUnavailable) as error:
             await scan_upload(b"oversized scanner stream", "/run/clamav/clamd.ctl")
+        assert error.value.category == "invalid_response"
+
+    asyncio.run(scenario())
+
+
+def test_clamav_timeout_and_missing_configuration_have_safe_categories(monkeypatch) -> None:
+    async def scenario() -> None:
+        async def stalled_connection(_path: str):
+            await asyncio.sleep(1)
+
+        monkeypatch.setattr(
+            asyncio, "open_unix_connection", stalled_connection, raising=False,
+        )
+        with pytest.raises(AntivirusUnavailable) as timeout_error:
+            await scan_upload(b"upload", "/run/clamav/clamd.ctl", timeout=0.001)
+        assert timeout_error.value.category == "timeout"
+
+        with pytest.raises(AntivirusUnavailable) as config_error:
+            await scan_upload(b"upload", "")
+        assert config_error.value.category == "not_configured"
 
     asyncio.run(scenario())
 

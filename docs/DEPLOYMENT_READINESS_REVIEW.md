@@ -397,3 +397,35 @@ Section 9 records the prior phase snapshot, before a reviewed source commit and 
 1. Have the authorized network or endpoint-security administrator inspect outbound TCP/443 from the WSL virtual network (`vEthernet (WSL)`, current subnet `172.22.176.0/20`) and any explicit firewall, VPN, or endpoint-filter policy. Do not add broad firewall exceptions or disconnect managed security controls without authorization.
 2. Re-run the three WSL `curl -4` probes. After they succeed, install Python 3.12 and `uv` in Ubuntu, run the exact locked sync and requested pytest commands, then continue with isolated dummy environment files, service verification, disposable-database restore, health-marker, interruption, and rollback checks.
 3. Production remains **NO-GO**. Release hashes and source provenance are verified locally; Linux/Python 3.12 tests, actual staging configuration, backup/restore, and rollback are not verified.
+
+## 13. ENAN ULTRA bug recovery and duplicate update protection — 2026-10-17
+
+This section appends the local bug-fix work to the existing readiness history. No production service, Azure resource, firewall, production database, deployment broker, or `.env` file was accessed or changed.
+
+**Historical note:** The opening snapshot and earlier sections describe a prior direct `/update` implementation. That snapshot is superseded by this section: the current local handler stages reviewed ZIPs without writing to the live source tree or restarting the bot process.
+
+### Confirmed fixes in the working tree
+
+- The default Telegram command list no longer exposes `/update`, `/block`, or `/unblock`; the administrator scopes keep them. Backend checks remain in place, and the ZIP upload/review callbacks now require the exact configured `ADMIN_ID` and `ADMIN_CHAT_ID`.
+- Reinstalling one `BotHandlers` instance on the same application does not add handlers twice. A second handler instance on that application is rejected. Each Telegram update ID is claimed atomically in SQLite before handlers run; duplicates and claim-store errors stop before side effects. Old claims are deleted after 30 days.
+- The live-tree `/update` extractor and process restart were removed from the Telegram handler. Admin ZIPs are scanned every time, regardless of the general-upload flag; unique quarantine files and SHA-256 metadata are kept when the scanner or archive validation fails. Only validated archives enter the restricted staging manager, where they remain reviewable and the live project tree is not modified. Quarantine entries expire after 24 hours. Production activation was not attempted.
+- Scanner failures now carry secret-safe categories for unconfigured/missing/unreachable sockets, timeouts, incomplete replies, and invalid replies. This improves diagnosis; it does not prove ClamAV is running on any target host.
+- Automatic model selection prefers a configured Ollama adapter and falls through to the configured cloud order when it fails. Explicit model selection and local-only mode retain their prior behavior.
+- Fresh installer configuration rewrites the shipped relative database default to `/var/lib/telegram-ai/telegram_ai.sqlite3`. Relative or out-of-bound database paths are rejected by the installer; a custom path inside the allowed state directory is preserved.
+
+### Verification and evidence
+
+- The final full suite on Windows/Python 3.15 passed: **191 passed in 75.70s** using an isolated locked environment. Full suites before the last caption-routing regression passed with **190 passed** on Python 3.11, 3.12, 3.13, and 3.14; the three final ZIP caption/scan/quarantine regression tests passed on each of those four versions.
+- CI quality checks passed locally: Ruff `0.17.1` with the workflow's `E4,E7,E9,F` selection, Python compileall, Mini App JavaScript syntax check, and wheel build.
+- One non-isolated matrix attempt accidentally selected the existing Python 3.12 environment without project dependencies and stopped during collection with 16 import errors and zero tests run. The isolated reruns above passed; this did not establish a source test failure.
+- ZIP, scanner, provider, authorization, deduplication, installation-idempotency, deployment-path, sticker, and theme tests use local fixtures or mocks. Tests did not call Telegram, ClamAV, production systemd, Azure, or the production deployment broker.
+- The GitHub Actions URLs and public jobs API for the prior run supplied in chat returned 404 from this workspace. Its original failure traceback and cause could not be established. New checks may run after the authorized source push.
+
+### Remaining production gates
+
+- Real Linux/systemd validation has not run. The local Python matrix ran on Windows and is not a substitute for the Linux/Python 3.12 staging suite.
+- No live ClamAV socket/daemon health was checked. Configure and verify ClamAV on an approved disposable Linux staging host before accepting updates there.
+- ZIP approval state remains process-local, and deployment activation/restart is intentionally outside this local work. Staging interruption, a real backup and restore, application health validation, and rollback need a disposable Linux VM and disposable state.
+- No live Telegram end-to-end test or browser visual/accessibility test ran. Sticker sending and Mini App rendering remain subject to real client/API verification.
+
+**Decision: production NO-GO.** Local fixes and cross-version Windows tests do not satisfy the remaining Linux/systemd, real scanner, Telegram, state-preservation, backup/restore, and rollback gates.

@@ -61,6 +61,25 @@ if [[ ! -f "${CONFIG_FILE}" ]]; then
 elif ! grep -q '^MALWARE_SCAN_ENABLED=' "${CONFIG_FILE}"; then
   printf '\nMALWARE_SCAN_ENABLED=true\nCLAMAV_SOCKET_PATH=/var/run/clamav/clamd.ctl\n' >> "${CONFIG_FILE}"
 fi
+# The shipped developer default is relative to the read-only application tree. Remap only
+# that known default; leave an operator-supplied absolute state path untouched.
+if grep -q '^DATABASE_PATH=data/telegram_ai.sqlite3$' "${CONFIG_FILE}"; then
+  sed -i 's#^DATABASE_PATH=data/telegram_ai.sqlite3$#DATABASE_PATH=/var/lib/telegram-ai/telegram_ai.sqlite3#' "${CONFIG_FILE}"
+elif ! grep -q '^DATABASE_PATH=' "${CONFIG_FILE}"; then
+  printf '\nDATABASE_PATH=/var/lib/telegram-ai/telegram_ai.sqlite3\n' >> "${CONFIG_FILE}"
+fi
+DATABASE_PATH_VALUE="$(sed -n 's/^DATABASE_PATH=//p' "${CONFIG_FILE}" | tail -n 1)"
+if [[ "${DATABASE_PATH_VALUE}" != /* ]]; then
+  echo "DATABASE_PATH must be absolute and placed in an allowed writable state directory." >&2
+  exit 1
+fi
+case "${DATABASE_PATH_VALUE}" in
+  /var/lib/telegram-ai/*) ;;
+  *)
+    echo "DATABASE_PATH must be inside /var/lib/telegram-ai for the systemd write boundary." >&2
+    exit 1
+    ;;
+esac
 chown root:root "${CONFIG_FILE}"
 chmod 0600 "${CONFIG_FILE}"
 

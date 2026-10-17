@@ -504,6 +504,7 @@ def test_staging_state_path_places_database_and_health_marker_in_writable_root()
     state_env = (
         project_root / "deploy" / "staging" / "staging-state.env.example"
     ).read_text(encoding="utf-8")
+    installer = (project_root / "deploy" / "install_ubuntu.sh").read_text(encoding="utf-8")
 
     env_files = re.findall(r"^EnvironmentFile=(.*)$", dropin, flags=re.MULTILINE)
     database_value = re.search(r"^DATABASE_PATH=(.+)$", state_env, flags=re.MULTILINE)
@@ -515,13 +516,16 @@ def test_staging_state_path_places_database_and_health_marker_in_writable_root()
     assert default_database is not None
     assert working_directory is not None
     assert writable_paths is not None
+    assert "DATABASE_PATH=/var/lib/telegram-ai/telegram_ai.sqlite3" in installer
+    assert "DATABASE_PATH=data/telegram_ai.sqlite3" in installer
 
-    default_database_path = PurePosixPath(working_directory.group(1)) / default_database.group(1)
     writable_roots = {PurePosixPath(item) for item in writable_paths.group(1).split()}
-    assert default_database_path.parent not in writable_roots
+    assert default_database.group(1) == "data/telegram_ai.sqlite3"
+    installer_database_path = PurePosixPath("/var/lib/telegram-ai/telegram_ai.sqlite3")
+    assert installer_database_path.parent in writable_roots
     assert (
-        _deployment_health_marker_path(default_database_path).as_posix()
-        != deployment_module.HEALTH_MARKER.as_posix()
+        _deployment_health_marker_path(installer_database_path).as_posix()
+        == deployment_module.HEALTH_MARKER.as_posix()
     )
 
     database_path = PurePosixPath(database_value.group(1))

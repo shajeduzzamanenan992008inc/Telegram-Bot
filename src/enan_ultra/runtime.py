@@ -38,6 +38,64 @@ from enan_ultra.storage.database import Database
 logger = logging.getLogger(__name__)
 
 
+def _admin_command_menu() -> list[BotCommand]:
+    return [
+        BotCommand("model", "Change the current AI model"),
+        BotCommand("models", "List models from configured providers"),
+        BotCommand("status", "Bot status"),
+        BotCommand("providers", "Configured provider health"),
+        BotCommand("providerdiag", "Provider circuit and credential diagnostics"),
+        BotCommand("admin", "Open the administrator menu"),
+        BotCommand("update", "Stage and review a ZIP code update"),
+        BotCommand("theme", "Choose adaptive visual themes"),
+        BotCommand("app", "Open the OMEGA AI workspace"),
+        BotCommand("end", "End a live session"),
+        BotCommand("endall", "End all live sessions"),
+        BotCommand("end_all", "End all live sessions"),
+        BotCommand("clearuser", "Clear a user's conversation memory"),
+        BotCommand("resetuser", "Clear a user's conversation memory"),
+        BotCommand("device", "Allowlisted Home Assistant control"),
+        BotCommand("vm", "Bot service status/restart"),
+        BotCommand("block", "Block a user's bot access"),
+        BotCommand("unblock", "Unblock a user's bot access"),
+        BotCommand("tasks", "Manage your personal task list"),
+        BotCommand("voice", "Toggle AI voice replies"),
+        BotCommand("image", "Generate an image"),
+        BotCommand("imagine", "Generate an image"),
+        BotCommand("search", "Search the live web"),
+        BotCommand("historysearch", "Search recent chat history"),
+        BotCommand("collect_on", "Enable admin-only sticker collection"),
+        BotCommand("collect_off", "Disable sticker collection"),
+        BotCommand("import_sticker_set", "Import a sticker pack for review"),
+        BotCommand("cancel_sticker_import", "Cancel your active sticker import"),
+        BotCommand("sticker_stats", "Show sticker catalog health"),
+        BotCommand("sticker_search", "Search sticker metadata"),
+        BotCommand("sticker_review", "List stickers pending approval"),
+        BotCommand("sticker_categorize", "Categorize and approve a sticker"),
+        BotCommand("sticker_export", "Export sticker catalog metadata"),
+        BotCommand("evolve_status", "Evolution proposal history"),
+        BotCommand("evolve_pending", "Pending evolution proposals"),
+        BotCommand("evolve_review", "Review a patch and test report"),
+        BotCommand("evolve_test", "Run an isolated patch test"),
+        BotCommand("evolve_approve", "Approve a patch for sandbox staging"),
+        BotCommand("evolve_stage", "Verify a staging candidate"),
+        BotCommand("evolve_deploy_approve", "Record production approval"),
+        BotCommand("evolve_cancel", "Cancel an evolution proposal"),
+        BotCommand("learning_status", "Show learning signal status"),
+        BotCommand("learning_pause", "Pause improvement signals"),
+        BotCommand("learning_resume", "Resume improvement signals"),
+        BotCommand("mission_new", "Start a private analysis mission"),
+        BotCommand("mission", "Mission Control menu"),
+        BotCommand("mission_list", "List your missions"),
+        BotCommand("mission_status", "Check a mission status"),
+        BotCommand("mission_pause", "Pause a mission"),
+        BotCommand("mission_resume", "Resume a mission"),
+        BotCommand("mission_cancel", "Cancel a mission"),
+        BotCommand("mission_report", "Show a mission report"),
+        BotCommand("mission_delete", "Delete a mission"),
+    ]
+
+
 def build_application(settings: Settings) -> Application:
     install_sanitized_log_buffer()
     if bool(settings.local_bot_api_base_url) != bool(settings.local_bot_api_file_url):
@@ -126,61 +184,7 @@ def build_application(settings: Settings) -> Application:
         app.bot_data["settings"] = settings
         await handlers.register_commands(app)
         try:
-            admin_commands = [
-                BotCommand("model", "Change the current AI model"),
-                BotCommand("models", "List models from configured providers"),
-                BotCommand("status", "Bot status"),
-                BotCommand("providers", "Configured provider health"),
-                BotCommand("providerdiag", "Provider circuit and credential diagnostics"),
-                BotCommand("admin", "Open the administrator menu"),
-                BotCommand("update", "Apply an admin ZIP update and restart the bot"),
-                BotCommand("theme", "Choose adaptive visual themes"),
-                BotCommand("app", "Open the OMEGA AI workspace"),
-                BotCommand("end", "End a live session"),
-                BotCommand("endall", "End all live sessions"),
-                BotCommand("end_all", "End all live sessions"),
-                BotCommand("clearuser", "Clear a user's conversation memory"),
-                BotCommand("resetuser", "Clear a user's conversation memory"),
-                BotCommand("device", "Allowlisted Home Assistant control"),
-                BotCommand("vm", "Bot service status/restart"),
-                BotCommand("block", "Block a user's bot access"),
-                BotCommand("unblock", "Unblock a user's bot access"),
-                BotCommand("tasks", "Manage your personal task list"),
-                BotCommand("voice", "Toggle AI voice replies"),
-                BotCommand("image", "Generate an image"),
-                BotCommand("imagine", "Generate an image"),
-                BotCommand("search", "Search the live web"),
-                BotCommand("historysearch", "Search recent chat history"),
-                BotCommand("collect_on", "Enable admin-only sticker collection"),
-                BotCommand("collect_off", "Disable sticker collection"),
-                BotCommand("import_sticker_set", "Import a sticker pack for review"),
-                BotCommand("cancel_sticker_import", "Cancel your active sticker import"),
-                BotCommand("sticker_stats", "Show sticker catalog health"),
-                BotCommand("sticker_search", "Search sticker metadata"),
-                BotCommand("sticker_review", "List stickers pending approval"),
-                BotCommand("sticker_categorize", "Categorize and approve a sticker"),
-                BotCommand("sticker_export", "Export sticker catalog metadata"),
-                BotCommand("evolve_status", "Evolution proposal history"),
-                BotCommand("evolve_pending", "Pending evolution proposals"),
-                BotCommand("evolve_review", "Review a patch and test report"),
-                BotCommand("evolve_test", "Run an isolated patch test"),
-                BotCommand("evolve_approve", "Approve a patch for sandbox staging"),
-                BotCommand("evolve_stage", "Verify a staging candidate"),
-                BotCommand("evolve_deploy_approve", "Record production approval"),
-                BotCommand("evolve_cancel", "Cancel an evolution proposal"),
-                BotCommand("learning_status", "Show learning signal status"),
-                BotCommand("learning_pause", "Pause improvement signals"),
-                BotCommand("learning_resume", "Resume improvement signals"),
-                BotCommand("mission_new", "Start a private analysis mission"),
-                BotCommand("mission", "Mission Control menu"),
-                BotCommand("mission_list", "List your missions"),
-                BotCommand("mission_status", "Check a mission status"),
-                BotCommand("mission_pause", "Pause a mission"),
-                BotCommand("mission_resume", "Resume a mission"),
-                BotCommand("mission_cancel", "Cancel a mission"),
-                BotCommand("mission_report", "Show a mission report"),
-                BotCommand("mission_delete", "Delete a mission"),
-            ]
+            admin_commands = _admin_command_menu()
             for admin_scope_id in {settings.admin_chat_id, *settings.effective_admin_user_ids}:
                 await app.bot.set_my_commands(
                     admin_commands, scope=BotCommandScopeChat(admin_scope_id),
@@ -320,6 +324,7 @@ async def _maintenance(
             await _scheduled_backup(app, db, settings)
             await db.cleanup_documents()
             await db.cleanup_action_executions()
+            await db.cleanup_processed_updates()
             await db.expire_approvals()
             await db.expire_missions()
             await db.expire_evolution_proposals()
