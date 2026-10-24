@@ -28,13 +28,15 @@ VALID_FILES = {
 
 def _manager(
     tmp_path: Path, *, sandbox_enabled: bool = True, deployment_enabled: bool = False,
+    admin_id: int = ADMIN_ID, admin_user_ids: frozenset[int] | None = None,
 ) -> TelegramZipUpdateManager:
     project = tmp_path / "live"
     (project / "src" / "enan_ultra").mkdir(parents=True)
     (project / "src" / "enan_ultra" / "__init__.py").write_bytes(b"# old\n")
     (project / "src" / "enan_ultra" / "runtime.py").write_bytes(b"# old runtime\n")
     settings = SimpleNamespace(
-        effective_admin_user_ids=frozenset({ADMIN_ID}),
+        admin_id=admin_id,
+        effective_admin_user_ids=admin_user_ids or frozenset({ADMIN_ID}),
         admin_chat_id=ADMIN_CHAT,
         max_upload_bytes=2_000_000,
         max_archive_expanded_bytes=2_000_000,
@@ -47,6 +49,20 @@ def _manager(
         update_deployment_socket_path=tmp_path / "deploy.sock",
     )
     return TelegramZipUpdateManager(settings, project, tmp_path / "state" / ".updates")
+
+
+def test_update_admin_can_be_separate_from_general_admin_allowlist(tmp_path: Path) -> None:
+    update_admin = ADMIN_ID + 1
+    manager = _manager(
+        tmp_path, admin_id=update_admin, admin_user_ids=frozenset({ADMIN_ID}),
+    )
+
+    manager.start_upload(update_admin, ADMIN_CHAT)
+    staged = manager.prepare(update_admin, ADMIN_CHAT, "release.zip", _zip(VALID_FILES))
+
+    assert staged.uploader_id == update_admin
+    with pytest.raises(PermissionError):
+        manager.start_upload(ADMIN_ID, ADMIN_CHAT)
 
 
 def _zip(
@@ -97,6 +113,31 @@ def test_admin_chat_scope_and_upload_expiry(tmp_path: Path) -> None:
         manager.prepare(ADMIN_ID, ADMIN_CHAT, "release.zip", _zip(VALID_FILES))
 
 
+def test_bot_restart_discards_in_memory_upload_and_review_state(tmp_path: Path) -> None:
+    manager = _manager(tmp_path)
+    session = manager.start_upload(ADMIN_ID, ADMIN_CHAT)
+    restarted_with_upload = TelegramZipUpdateManager(
+        manager.settings, manager.project_root, manager.staging_parent,
+    )
+    assert not restarted_with_upload.has_upload_session(ADMIN_ID)
+
+    restarted_with_upload.start_upload(ADMIN_ID, ADMIN_CHAT)
+    staged = restarted_with_upload.prepare(
+        ADMIN_ID, ADMIN_CHAT, "release.zip", _zip(VALID_FILES),
+    )
+    assert staged.update_id in restarted_with_upload.updates
+    assert staged.release_dir.is_dir()
+
+    restarted = TelegramZipUpdateManager(
+        manager.settings, manager.project_root, manager.staging_parent,
+    )
+
+    assert not restarted.has_upload_session(ADMIN_ID)
+    assert restarted.get_update(staged.update_id, ADMIN_ID, ADMIN_CHAT) is None
+    assert not staged.release_dir.exists()
+    assert session.chat_id == ADMIN_CHAT
+
+
 def test_quarantine_directory_is_private_and_expired_uploads_are_removed(tmp_path: Path) -> None:
     manager = _manager(tmp_path)
     quarantine = manager.quarantine_directory()
@@ -110,6 +151,35 @@ def test_quarantine_directory_is_private_and_expired_uploads_are_removed(tmp_pat
     os.utime(old_upload, (old_time, old_time))
     manager.cleanup_expired()
     assert not old_upload.exists()
+
+
+def test_zip_extraction_deadline_aborts_and_cleans_partial_release(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    import time as system_time
+
+    from enan_ultra.services import telegram_zip_updates as zip_updates_module
+
+    manager = _manager(tmp_path)
+    manager.settings.update_extract_timeout_seconds = 1
+    clock = {"now": 100.0}
+    monkeypatch.setattr(zip_updates_module, "time", SimpleNamespace(
+        monotonic=lambda: clock["now"], time=system_time.time,
+    ))
+    manager.start_upload(ADMIN_ID, ADMIN_CHAT)
+
+    extract_validated = manager._extract_validated
+
+    def exceed_deadline(entries, release_dir, archive_data, deadline=None):
+        extract_validated(entries, release_dir, archive_data, deadline)
+        clock["now"] = 102.0
+
+    monkeypatch.setattr(manager, "_extract_validated", exceed_deadline)
+    with pytest.raises(TimeoutError, match="UPDATE_EXTRACT_TIMEOUT_SECONDS"):
+        manager.prepare(ADMIN_ID, ADMIN_CHAT, "release.zip", _zip(VALID_FILES))
+
+    assert manager.updates == {}
+    assert list(manager.staging_parent.iterdir()) == []
 
 
 def test_active_telegram_zip_handler_scans_and_stages_without_touching_live_tree(
@@ -405,6 +475,36 @@ def test_stages_in_isolation_and_hash_binds_exact_release(tmp_path: Path) -> Non
     assert live_file.read_text() == "# old runtime\n"
 
 
+def test_partial_zip_is_merged_before_review_and_keeps_omitted_files(tmp_path: Path) -> None:
+    manager = _manager(tmp_path)
+    untouched = manager.project_root / "src" / "enan_ultra" / "worker.py"
+    untouched.write_bytes(b"VALUE = 'keep me'\n")
+    uploaded = _zip({
+        "src/enan_ultra/__init__.py": "# updated\n",
+        "src/enan_ultra/runtime.py": "def start():\n    return True\n",
+    })
+
+    staged = _prepare(manager, uploaded)
+    candidate_worker = staged.release_dir / "src" / "enan_ultra" / "worker.py"
+    assert candidate_worker.read_text(encoding="utf-8") == "VALUE = 'keep me'\n"
+    worker = next(item for item in staged.files if item.path.endswith("/worker.py"))
+    assert worker.action == "unchanged"
+    assert staged.source_archive_sha256 == hashlib.sha256(uploaded).hexdigest()
+    assert staged.archive_sha256 == hashlib.sha256(staged.archive_path.read_bytes()).hexdigest()
+    with zipfile.ZipFile(staged.archive_path) as candidate:
+        assert "src/enan_ultra/worker.py" in candidate.namelist()
+        assert candidate.read("src/enan_ultra/worker.py") == b"VALUE = 'keep me'\n"
+
+    class CandidateSandbox:
+        async def run_update_tests(self, data: bytes) -> SimpleNamespace:
+            with zipfile.ZipFile(io.BytesIO(data)) as candidate:
+                assert "src/enan_ultra/worker.py" in candidate.namelist()
+            return SimpleNamespace(exit_code=0, output="candidate tests passed", timed_out=False)
+
+    asyncio.run(manager.run_tests(staged, CandidateSandbox()))
+    assert staged.test_status == "PASS"
+
+
 def test_only_one_active_release_can_consume_staging_space(tmp_path: Path) -> None:
     manager = _manager(tmp_path)
     first = _prepare(manager)
@@ -572,6 +672,7 @@ def test_production_approval_is_separate_authorized_and_one_shot(tmp_path: Path)
     manager.finish_production_deployment(
         staged.update_id, accepted=True, result="Accepted.",
     )
+    assert staged.deployment_state == "awaiting_operator_authorization"
     with pytest.raises(ValueError, match="already been used"):
         manager.begin_production_deployment(
             staged.update_id, prefix, ADMIN_ID, ADMIN_CHAT,
@@ -676,13 +777,13 @@ def test_production_callback_authorizes_exact_release_and_rejects_replay(
         query, update = callback(ADMIN_ID, ADMIN_CHAT)
         await handler.update_callback(update, None)
         query.answer.assert_awaited_once_with()
-        assert staged.deployment_state == "deploying"
+        assert staged.deployment_state == "awaiting_operator_authorization"
         assert handler.db.audit.await_count == 2
 
         replay, replay_update = callback(ADMIN_ID, ADMIN_CHAT)
         await handler.update_callback(replay_update, None)
         replay.answer.assert_awaited_once()
         assert replay.answer.call_args.kwargs["show_alert"] is True
-        assert staged.deployment_state == "deploying"
+        assert staged.deployment_state == "awaiting_operator_authorization"
 
     asyncio.run(scenario())

@@ -96,8 +96,17 @@ def test_mini_app_auth_theme_preferences_streaming_and_user_isolation(tmp_path: 
             def __init__(self):
                 self.locks = {}
                 self.last_request = {}
+                self.learned_style_inputs = []
+                owner = self
 
-            async def _profile(self, _user_id, name):
+                class StyleProfiles:
+                    async def learn_message(inner_self, user_id, text, *, private_chat, temporary):
+                        owner.learned_style_inputs.append((user_id, text, private_chat, temporary))
+
+                self.style_profiles = StyleProfiles()
+
+            async def _profile(self, _user_id, name, *, include_style_profile=False):
+                assert include_style_profile
                 return UserProfile(name=name, memory_enabled=False)
 
             def _system_prompt(self, *_args):
@@ -234,17 +243,25 @@ def test_mini_app_auth_theme_preferences_streaming_and_user_isolation(tmp_path: 
                 assert "বাংলা উত্তর" in streamed.text and "event: done" in streamed.text
                 assert [item["role"] for item in await db.history(77, 10)] == ["user", "assistant"]
                 assert await db.history(88, 10) == []
+                assert service.handlers.learned_style_inputs == [(77, "Explain a molecule", True, False)]
 
                 learning_off = await client.post(
                     "/api/v1/theme", headers=first_headers,
                     json={"action": "setting", "key": "theme_learning", "value": "off"},
                 )
                 assert learning_off.status_code == 200
+                tracking_off = await client.post(
+                    "/api/v1/theme", headers=first_headers,
+                    json={"action": "setting", "key": "theme_tracking", "value": "off"},
+                )
+                assert tracking_off.status_code == 200
+                assert tracking_off.json()["state"]["theme_tracking"] == "off"
                 reset = await client.post(
                     "/api/v1/theme", headers=first_headers, json={"action": "reset"},
                 )
                 assert reset.status_code == 200
                 assert reset.json()["state"]["mode"] == "auto"
+                assert reset.json()["state"]["theme_tracking"] == "on"
         finally:
             await db.close()
 

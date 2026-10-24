@@ -6,10 +6,16 @@ import json
 import logging
 import re
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+TOPIC_METADATA_RETENTION_DAYS = 90
+_TOPIC_METADATA_KEYS = (
+    "theme_last_topic", "theme_last_confidence", "theme_reason_code",
+    "theme_candidate_id", "theme_candidate_count", "theme_last_updated_at",
+)
 _COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 _THEME_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 _REQUIRED_COLORS = {"background", "surface", "accent", "glow", "text"}
@@ -200,6 +206,17 @@ class AdaptiveThemeEngine:
         self, db: Any, user_id: int, text: str = "", context: list[dict[str, Any]] | None = None,
         *, persist: bool = True,
     ) -> ThemeDecision:
+        await self._expire_user_metadata(db, user_id)
+        tracking = await db.get_preference(user_id, "theme_tracking", "on")
+        if tracking == "off":
+            current = await self.current(db, user_id)
+            return replace(
+                current,
+                topic_id="general" if current.mode == "auto" else current.topic_id,
+                confidence=0.0 if current.mode == "auto" else current.confidence,
+                keywords=(),
+                reason_code="topic_tracking_paused" if current.mode == "auto" else current.reason_code,
+            )
         mode = await db.get_preference(user_id, "theme_mode", "auto")
         if mode not in {"auto", "manual", "off"}:
             mode = "auto"
@@ -225,7 +242,11 @@ class AdaptiveThemeEngine:
                 detection.topic_id if detection.confidence >= 0.55 else previous
             )
             if selected == "general" and detection.topic_id == "general":
-                preferred = await db.get_preference(user_id, "theme_preferred_id", "")
+                learning_enabled = await db.get_preference(user_id, "theme_learning", "on") == "on"
+                preferred = (
+                    await db.get_preference(user_id, "theme_preferred_id", "")
+                    if learning_enabled else ""
+                )
                 if preferred in self.registry.themes:
                     selected = preferred
                     detection = replace(detection, reason_code="preferred_visual_fallback")
@@ -235,6 +256,7 @@ class AdaptiveThemeEngine:
             await db.set_preference(user_id, "theme_last_topic", detection.topic_id)
             await db.set_preference(user_id, "theme_last_confidence", f"{detection.confidence:.3f}")
             await db.set_preference(user_id, "theme_reason_code", detection.reason_code)
+            await db.set_preference(user_id, "theme_last_updated_at", datetime.now(UTC).isoformat())
         return ThemeDecision(
             topic_id=detection.topic_id,
             theme_id=selected,
@@ -246,6 +268,7 @@ class AdaptiveThemeEngine:
         )
 
     async def current(self, db: Any, user_id: int) -> ThemeDecision:
+        await self._expire_user_metadata(db, user_id)
         mode = await db.get_preference(user_id, "theme_mode", "auto")
         if mode not in {"auto", "manual", "off"}:
             mode = "auto"
@@ -282,15 +305,79 @@ class AdaptiveThemeEngine:
         await db.set_preference(user_id, "theme_candidate_count", "0")
         return await self.current(db, user_id)
 
+    async def set_tracking(self, db: Any, user_id: int, enabled: bool) -> None:
+        """Control automatic topic inference and erase only its derived metadata when paused."""
+        await db.set_preference(user_id, "theme_tracking", "on" if enabled else "off")
+        if enabled:
+            return
+        mode = await db.get_preference(user_id, "theme_mode", "auto")
+        keys = (
+            "theme_last_topic", "theme_last_confidence", "theme_reason_code",
+            "theme_candidate_id", "theme_candidate_count", "theme_last_updated_at",
+        )
+        if mode != "manual":
+            keys = (*keys, "theme_current_id")
+        await db.delete_preferences(user_id, keys=keys)
+
+    async def cleanup_expired(
+        self, db: Any, *, now: datetime | None = None,
+    ) -> int:
+        """Expire derived topic metadata while retaining manual appearance preferences."""
+        cursor = await db._db().execute(
+            "SELECT DISTINCT user_id FROM user_preferences "
+            "WHERE key IN ('theme_last_topic','theme_last_confidence','theme_reason_code',"
+            "'theme_candidate_id','theme_candidate_count','theme_last_updated_at')",
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        instant = now or datetime.now(UTC)
+        expired = 0
+        for row in rows:
+            if await self._expire_user_metadata(db, int(row["user_id"]), now=instant):
+                expired += 1
+        return expired
+
+    async def _expire_user_metadata(
+        self, db: Any, user_id: int, *, now: datetime | None = None,
+    ) -> bool:
+        raw_updated_at = await db.get_preference(user_id, "theme_last_updated_at", "")
+        if not raw_updated_at:
+            expired = False
+            for key in _TOPIC_METADATA_KEYS[:-1]:
+                if await db.get_preference(user_id, key, ""):
+                    expired = True
+                    break
+        else:
+            try:
+                updated_at = datetime.fromisoformat(raw_updated_at)
+                if updated_at.tzinfo is None:
+                    updated_at = updated_at.replace(tzinfo=UTC)
+                expired = updated_at + timedelta(days=TOPIC_METADATA_RETENTION_DAYS) <= (
+                    now or datetime.now(UTC)
+                )
+            except ValueError:
+                expired = True
+        if not expired:
+            return False
+        keys = _TOPIC_METADATA_KEYS
+        if await db.get_preference(user_id, "theme_mode", "auto") != "manual":
+            keys = (*keys, "theme_current_id")
+        await db.delete_preferences(user_id, keys=keys)
+        return True
+
     async def update_setting(self, db: Any, user_id: int, key: str, value: str) -> None:
         valid = {
             "appearance_mode": {"system", "dark", "light"},
             "theme_animation": {"auto", "full", "reduced", "off"},
             "theme_learning": {"on", "off"},
+            "theme_tracking": {"on", "off"},
             "theme_palette": {"default", "teal", "violet", "amber", "rose"},
         }
         if key not in valid or value not in valid[key]:
             raise ValueError("Unsupported theme preference")
+        if key == "theme_tracking":
+            await self.set_tracking(db, user_id, value == "on")
+            return
         await db.set_preference(user_id, key, value)
 
     async def favorite(self, db: Any, user_id: int, theme_id: str) -> bool:

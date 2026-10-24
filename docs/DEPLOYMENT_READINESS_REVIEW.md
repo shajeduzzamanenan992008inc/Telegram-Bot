@@ -1,14 +1,66 @@
 # ENAN_ULTRA — Final Deployment Readiness Review
 
-## Workspace update (2026-10-17)
+## Current workspace reassessment (2026-10-23)
 
-After the reviews below, the active Telegram `/update` handler was changed to accept an admin ZIP, safely overlay project files, preserve protected state, and replace the Python process. This later workspace change is uncommitted and was not tested or deployed. The staged-update and broker test results below describe the earlier implementation and do not verify this direct updater. This note does not change the production NO-GO or Azure evidence in the historical review.
+The current branch is `codex/admin-zip-update` at `4050a487d6b32ff4b6fc4ed92bd3f0de06abfc49`. The working tree contains preserved modifications to configuration, handlers/runtime support, updater, broker, installer/service, tests, CI, and documentation, plus untracked regression tests. This is not a clean release artifact.
 
-**Review basis:** The Copilot/terminal logs supplied in this conversation. This is a consolidated review of those logs, not an independent connection to the user's Windows workspace or Azure VM.
+The active `/update` handler now stages a patch ZIP in private quarantine, requires a clean malware scan, produces a full merged candidate without applying omissions as deletions, and requires syntax plus rootless sandbox test success before digest-bound review. Production approval is a separate action. The broker builds immutable versioned releases and uses an atomic `current` symlink switch with a verified recovery snapshot and health-gated rollback. Local automated tests exercise mocked broker behavior; they are not a Linux/systemd deployment drill.
 
-**Decision: `BLOCKED — DO NOT ENABLE PRODUCTION DEPLOYMENT YET`**
+**Decision: `NO-GO FOR PRODUCTION`**
 
-## 1. Executive summary
+The live Azure target, service identity, permissions, environment loading, import origin, database/state paths, backup restore, health marker, and rollback have not been independently rechecked during this repair. The observations in the historical 2026-10-17 review below are supplied-log evidence only, not current host facts. Keep `UPDATE_DEPLOYMENT_ENABLED=false`; do not install or enable the broker/socket on a live host until the exact target is independently verified and a disposable Linux recovery drill passes.
+
+The current workspace dependency audit identified vulnerable locked versions of `certifi`, Pillow, and `pypdf`. The fixed versions are in `pyproject.toml`/`uv.lock`, and the new locked dependency audit reports no known vulnerabilities.
+
+## Local verification (2026-10-23)
+
+The results in this subsection predate the broker security remediation described below. They do not verify the broker changes currently in the working tree.
+
+- Full locked test matrix: **228 passed** on Python 3.11 (60.37s), 3.12 (157.05s), 3.13 (136.45s), 3.14 (132.57s), and 3.15 (109.88s), using `uv run --isolated --locked --python <version> --group test pytest -q`.
+- The first Python 3.11 matrix run exposed a test-double gap: its fake TLS context lacked `verify_mode`/`check_hostname`, which that runtime's `http.client` reads. The test double now declares verified TLS settings; `tests/test_external_image_security.py` then passed **28/28**, and the full Python 3.11 suite passed.
+- Locked dependency export resolved **55 packages**. `uvx --from pip-audit==2.10.1 pip-audit --no-deps --requirement <temporary-export>` reported **No known vulnerabilities found** after locking `certifi==2026.10.19`, `Pillow==13.0.0`, and `pypdf==6.21.1`.
+- `python -m ruff check --select E4,E7,E9,F src tests`, `python -m compileall -q src tests deploy`, `node --check src/enan_ultra/webapp/static/app.js`, `node --test tests/test_webapp_theme_ui.cjs` (**2 passed**), `uv build --wheel --no-sources`, and the CI wheel-asset check (**13 assets**) all passed.
+- `git diff --check` passed. Git printed its existing CRLF-to-LF normalization notices for several working-tree files; it reported no whitespace errors.
+- All deployment, ClamAV, Telegram, provider, and broker tests are local/mocked. No real scanner daemon, production credentials, live Telegram/provider call, Linux/systemd host, or Azure target was contacted.
+
+## Post-remediation workspace recheck (2026-10-23)
+
+The latest local review remains on branch `codex/admin-zip-update`, HEAD `4050a487d6b32ff4b6fc4ed92bd3f0de06abfc49`. The working tree still contains the user's existing repair changes and untracked tests; no commit, push, deployment, production restart, broker/socket enablement, Azure mutation, or Telegram message was made. Four tracked files that were clean at the initial status (`.editorconfig`, `AGENTS.md`, `Procfile`, `babel.cfg`) were later found absent during verification and restored from `HEAD`; the final status has no deletions for them.
+
+- The full Windows/Python 3.15 suite completed with **247 passed**. After a test-only assertion was added for duplicate command registration, the focused menu/ZIP/idempotency subset completed with **51 passed**. These are local tests with constructed Telegram updates and mocks; production code did not change after the full run.
+- The public menu has **65** commands, the admin menu has **34**, and **2** compatibility aliases are hidden. Scope tests prove the default and group-wide scopes contain only public commands, the primary ZIP admin gets only `/update` when separate from the general admin allowlist, and removed admins/chats have obsolete scopes deleted from tracked history. These are mocked Bot API calls; the live Telegram menu remains unverified. Previous Telegram command scopes created before the local history file existed cannot be enumerated from current settings and need a live one-time cleanup check for known former admin IDs.
+- `uv lock --check` passed and resolved 55 packages. The locked build/test dependency export passed `pip-audit 2.10.1` with **No known vulnerabilities found**. Ruff (`E4,E7,E9,F`), Python compilation, frontend syntax, and 2 Node tests passed. `git diff --check` passed before the final documentation additions and will be rechecked with the final diff.
+- A fresh wheel was built from the final dirty source tree to a unique temporary directory, not the repository's old artifact directory. Its ZIP integrity passed and all 13 expected Mini App assets were present. Temporary wheel SHA-256: `ab0711429880ac1a21178b261d73ddcbeab8325ba6975a7dce57f9a36b45b8f6`. This wheel is not a reviewed, signed, or CI-attested release.
+- `pyproject.toml` supports Python `>=3.11,<3.16`; the workflow declares Python 3.11–3.15 jobs and a Python 3.15 quality/build job. No current remote CI run is tied to this dirty tree.
+- The exact current Azure service identity, OS/Python version, imported package/source, config and data paths, ownership, socket state, backup location, health command, and rollback behavior are all **BLOCKED/UNKNOWN**. Historical host notes below are not current target evidence. No disposable Ubuntu/systemd staging VM was available or tested.
+- `HEAD` is unsigned (`git log -1 --format=%G?` returned `N`; `git verify-commit HEAD` exit code 1). The GitHub CLI is unavailable, so no external Actions run could be queried or attributed to this HEAD.
+
+| Intended target fact | Current status | Evidence |
+|---|---|---|
+| Azure resource and service identity (`User`, `Group`, unit) | `BLOCKED / UNKNOWN` | No current read-only target session; historical notes are not current evidence. |
+| Ubuntu and Python version; interpreter and imported package provenance | `BLOCKED / UNKNOWN` | No current target query. The local workflow supports Python 3.11–3.15 but does not establish the host version. |
+| Config/environment file and database/state/health-marker paths | `BLOCKED / UNKNOWN` | No target configuration or path inventory was read. |
+| Socket, broker enable flag, service permissions and file ownership | `BLOCKED / UNKNOWN` | No current systemd, peer-credential or filesystem inspection. No broker/socket was enabled. |
+| Backup location, restore procedure and data integrity | `BLOCKED / UNKNOWN` | Only temporary/local helper tests exist; no target backup was opened or restored. |
+| Health-check command and rollback recovery on target | `BLOCKED / UNKNOWN` | Local mocked broker tests only; no Linux/systemd recovery drill. |
+
+The complete feature-status table and command inventory are in [feature verification](./FEATURE_VERIFICATION_REPORT.md). Production stays **NO-GO** until the target is independently inspected read-only, a reviewed release is built from a clean source state, and the exact artifact passes disposable Linux/systemd, ClamAV, backup/restore, health and rollback checks.
+
+## Broker authorization remediation (2026-10-23)
+
+The bot socket peer can now create only a pending request bound to the update/release ID, full manifest SHA-256, archive SHA-256, fixed `deploy` operation, and a 15-minute expiry. The caller-provided Telegram administrator ID is stored as an untrusted claim and cannot activate code. `approval_details` and `authorize` are root-peer-only operations. A root interactive command displays both digests and the claimed administrator ID; the root operator must independently inspect the real Telegram approval, compare its digest, enter the verified admin ID, and type the full release confirmation. The broker consumes the root approval once in a root-private SQLite state database before it starts activation. There is no reusable token or signing secret in the bot process.
+
+Trust assumption: this compatible in-repository design uses a trusted root operator as the independent approval component. The operator must verify the actual Telegram action in the administrator chat; the broker cannot cryptographically query Telegram's polling update history in the existing single-process bot architecture. Root-level compromise or deliberate root bypass is outside the boundary. This design has not been run on Linux/systemd staging.
+
+The installer now refuses to proceed if a versioned `current` release exists or `telegram-ai.service` is active, and remains bootstrap-only. SQLite backup/restore guidance uses SQLite's online backup API so committed WAL data is included; the broker's code snapshots remain separate from database backups. The backup procedure has not yet been exercised against the target database.
+
+Production remains **NO-GO** pending the targeted checks below, a clean release artifact/CI result, Linux/systemd staging, independent backup/restore and rollback evidence, and read-only inspection of the intended Azure target.
+
+## Historical host review (2026-10-17; not reverified)
+
+**Review basis:** Operator/terminal logs supplied at that time. This is not an independent connection to the user's Azure VM.
+
+### Historical executive summary
 
 The local repository has a tested ZIP-staging workflow and a local deployment-broker implementation. The supplied completion log reports **176 local tests passed**, **45 focused ZIP/deployment tests passed**, and successful Ruff, compile, frontend syntax, manifest-hash, and `git diff --check` validations. These results are local/mock evidence; they are not proof that the selected Azure production service can safely run the new code.
 
@@ -16,7 +68,7 @@ The selected production target is `enan-ultra.service`, which runs `python -m en
 
 No production deployment, service restart, production file/permission/database/credential/firewall change was reported in the supplied logs.
 
-## 2. Evidence-based status
+### Historical evidence-based status
 
 | Area | Status | Evidence and limitation |
 |---|---|---|
@@ -35,7 +87,7 @@ No production deployment, service restart, production file/permission/database/c
 | Credential exposure | `ACTION REQUIRED` | A prior command accidentally emitted credential values. The OpenRouter key must be treated as compromised and revoked/replaced. Do not put the exposed value in reports or source. The Telegram MTProto app credentials/session need a separate authorized remediation review; do not assume a specific revocation/reissue behavior without verification. |
 | Production deployment/rollback | `NOT VERIFIED / BLOCKED` | No live deployment or service restart occurred. Local design/tests do not demonstrate that the broker is installed, enabled, correctly privileged, or compatible with the selected VM layout. |
 
-## 3. Canonical-source and release-provenance conclusion
+### Historical canonical-source and release-provenance conclusion
 
 The available evidence is insufficient to authorize release:
 
@@ -48,7 +100,7 @@ The available evidence is insufficient to authorize release:
 
 **Therefore, do not infer that a remote-main match alone proves that the local working tree or installed VM package is trustworthy.**
 
-## 4. Required remediation plan
+### Historical remediation plan
 
 ### P0 — Security and identity
 
@@ -415,12 +467,12 @@ This section appends the local bug-fix work to the existing readiness history. N
 
 ### Verification and evidence
 
-- The latest full suite on Windows/Python 3.15 passed: **193 passed in 87.08s** using an isolated locked environment. It includes an actual PTB `Application.process_update()` replay test that confirms one command and one general-message side effect, plus provider fallback tests for timeout and HTTP 429. Both new regression tests also passed individually on Python 3.11–3.14. Full suites before the last caption-routing regression passed with **190 passed** on Python 3.11, 3.12, 3.13, and 3.14; the three final ZIP caption/scan/quarantine regression tests passed on each of those four versions.
+- The latest full suite on Windows/Python 3.15 passed: **195 passed in 67.79s** using an isolated locked environment. It includes an actual PTB `Application.process_update()` replay test that confirms one command and one general-message side effect, provider fallback tests for timeout and HTTP 429, and a deterministic ZIP extraction-deadline cleanup test. The new timeout/config tests passed individually on Python 3.11–3.14. `UPDATE_EXTRACT_TIMEOUT_SECONDS` defaults to 60 and is bounded to 1–300 seconds. Full suites before the last caption-routing regression passed with **190 passed** on Python 3.11, 3.12, 3.13, and 3.14; the three final ZIP caption/scan/quarantine regression tests passed on each of those four versions.
 - CI quality checks passed locally: Ruff `0.17.1` with the workflow's `E4,E7,E9,F` selection, Python compileall, Mini App JavaScript syntax check, and wheel build.
 - One non-isolated matrix attempt accidentally selected the existing Python 3.12 environment without project dependencies and stopped during collection with 16 import errors and zero tests run. The isolated reruns above passed; this did not establish a source test failure.
 - ZIP, scanner, provider, authorization, deduplication, installation-idempotency, deployment-path, sticker, and theme tests use local fixtures or mocks. Tests did not call Telegram, ClamAV, production systemd, Azure, or the production deployment broker.
 - The original run supplied in chat was unavailable to inspect, so its specific traceback remains unconfirmed. After push commit `9b46cea44d3729956972673b798c5cc09031acd8`, GitHub Actions run [39040476917](https://github.com/shajeduzzamanenan992008inc/Telegram-Bot/actions/runs/39040476917) completed successfully: all five Python test jobs (3.11–3.15) and the quality job passed.
-- The test/report commit `05eb7805028a1420338b9b8ba80cf544f446f3da` passed all six jobs in [run 39041606845](https://github.com/shajeduzzamanenan992008inc/Telegram-Bot/actions/runs/39041606845): Python 3.11–3.15 tests and quality.
+- The test/report commit `05eb7805028a1420338b9b8ba80cf544f446f3da` passed all six jobs in [run 39041606845](https://github.com/shajeduzzamanenan992008inc/Telegram-Bot/actions/runs/39041606845): Python 3.11–3.15 tests and quality. The later bounded ZIP-stage timeout change has passed the local Python 3.15 suite and targeted Python 3.11–3.14 checks; its GitHub matrix will be checked after push.
 
 ### Remaining production gates
 

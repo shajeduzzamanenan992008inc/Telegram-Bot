@@ -238,6 +238,7 @@
     $("animation").value = state.preferences.theme_animation || "auto";
     $("palette").value = state.preferences.theme_palette || "default";
     $("learning").checked = (state.preferences.theme_learning || "on") === "on";
+    $("tracking").checked = (state.preferences.theme_tracking || "on") === "on";
   }
 
   function addMessage(role, content = "") {
@@ -481,6 +482,7 @@
       $(id).addEventListener("change", () => updateTheme({action: "setting", key, value: $(id).value}));
     }
     $("learning").addEventListener("change", () => updateTheme({action: "setting", key: "theme_learning", value: $("learning").checked ? "on" : "off"}));
+    $("tracking").addEventListener("change", () => updateTheme({action: "setting", key: "theme_tracking", value: $("tracking").checked ? "on" : "off"}));
     $("reset-theme").addEventListener("click", async () => {
       if (!confirm("সব visual preference মুছে Auto mode চালু করবে?")) return;
       await updateTheme({action: "reset"});

@@ -793,10 +793,18 @@ def test_personal_timezone_and_temporary_chat_preferences(tmp_path: Path) -> Non
 def test_command_help_and_menu_are_in_english() -> None:
     from unittest.mock import AsyncMock
 
+    from telegram import BotCommandScopeChat, BotCommandScopeChatMember, BotCommandScopeDefault
+
+    from enan_ultra.command_menu import ADMIN_COMMANDS
     from enan_ultra.handlers import BotHandlers
 
     async def scenario() -> None:
-        handlers = BotHandlers(SimpleNamespace(), None, None, None, None, None)
+        settings = SimpleNamespace(
+            admin_chat_id=-2000,
+            admin_id=100,
+            effective_admin_user_ids=frozenset({100, 101}),
+        )
+        handlers = BotHandlers(settings, None, None, None, None, None)
         replies: list[str] = []
 
         async def allowed(*args: object, **kwargs: object) -> bool:
@@ -814,19 +822,55 @@ def test_command_help_and_menu_are_in_english() -> None:
         set_my_commands = AsyncMock()
         app = SimpleNamespace(bot=SimpleNamespace(set_my_commands=set_my_commands))
         await handlers.register_commands(app)
-        commands = set_my_commands.await_args.args[0]
-        assert all(not any("\u0980" <= char <= "\u09ff" for char in command.description) for command in commands)
-        assert not {"update", "block", "unblock"} & {command.command for command in commands}
-        assert {command.command for command in commands} >= {
-            "help", "clear", "reset", "document", "knowledge", "research", "snooze",
-        }
-        from enan_ultra.runtime import _admin_command_menu
-        assert {"update", "block", "unblock"} <= {
-            command.command for command in _admin_command_menu()
-        }
+        calls = set_my_commands.await_args_list
+        default_call = next(call for call in calls if isinstance(call.kwargs["scope"], BotCommandScopeDefault))
+        public_names = {command.command for command in default_call.args[0]}
+        admin_only_names = {command.command for command in ADMIN_COMMANDS}
+        assert all(
+            not any("\u0980" <= char <= "\u09ff" for char in command.description)
+            for command in default_call.args[0]
+        )
+        assert not public_names & admin_only_names
+        assert {"help", "clear", "document", "knowledge", "research", "snooze", "usage"} <= public_names
+        assert len(default_call.args[0]) <= 100
+
+        group_public_call = next(
+            call for call in calls
+            if isinstance(call.kwargs["scope"], BotCommandScopeChat)
+            and call.kwargs["scope"].chat_id == -2000
+        )
+        assert {command.command for command in group_public_call.args[0]} == public_names
+
+        admin_calls = [
+            call for call in calls
+            if isinstance(call.kwargs["scope"], (BotCommandScopeChat, BotCommandScopeChatMember))
+            and not (
+                isinstance(call.kwargs["scope"], BotCommandScopeChat)
+                and call.kwargs["scope"].chat_id == -2000
+            )
+        ]
+        assert len(admin_calls) == 4
+        for call in admin_calls:
+            scope = call.kwargs["scope"]
+            names = {command.command for command in call.args[0]}
+            assert public_names <= names
+            assert admin_only_names - {"update"} <= names
+            if isinstance(scope, BotCommandScopeChatMember):
+                assert scope.chat_id == -2000
+                assert ("update" in names) is (scope.user_id == 100)
+            else:
+                assert scope.chat_id in {100, 101}
+                assert "update" not in names
+        assert all(
+            not (
+                isinstance(call.kwargs["scope"], BotCommandScopeChat)
+                and call.kwargs["scope"].chat_id == -2000
+                and "update" in {command.command for command in call.args[0]}
+            )
+            for call in calls
+        )
 
     asyncio.run(scenario())
-
 
 def test_clear_user_conversation_only_removes_private_history_and_memory(tmp_path: Path) -> None:
     async def scenario() -> None:

@@ -280,8 +280,10 @@ class MiniAppServer:
                 lock.release()
                 raise HTTPException(status_code=429, detail="Please wait before sending another message")
             try:
-                profile = await self.handlers._profile(user_id, self._display_name(user))
                 temporary = await self.db.get_preference(user_id, "temporary_chat", "off") == "on"
+                profile = await self.handlers._profile(
+                    user_id, self._display_name(user), include_style_profile=not temporary,
+                )
                 history = [] if temporary else await self.db.history(
                     user_id, max(0, self.settings.history_messages - 1),
                 )
@@ -383,6 +385,7 @@ class MiniAppServer:
             "label": theme.get("label", {}),
             "icon": theme.get("icon", "✨"),
             "theme_learning": await self.db.get_preference(user_id, "theme_learning", "on"),
+            "theme_tracking": await self.db.get_preference(user_id, "theme_tracking", "on"),
             "theme_animation": await self.db.get_preference(user_id, "theme_animation", "auto"),
             "appearance_mode": await self.db.get_preference(user_id, "appearance_mode", "system"),
             "theme_palette": await self.db.get_preference(user_id, "theme_palette", "default"),
@@ -423,6 +426,15 @@ class MiniAppServer:
                 yield self._event("token", {"text": token})
             result = await task
             final_text = result.text.strip()[:self.settings.max_output_chars]
+            if final_text and not temporary and messages:
+                prompt = messages[-1].get("content")
+                if isinstance(prompt, str):
+                    try:
+                        await self.handlers.style_profiles.learn_message(
+                            user_id, prompt, private_chat=True, temporary=False,
+                        )
+                    except Exception as exc:
+                        logger.warning("Could not update opted-in Mini App style profile (%s)", type(exc).__name__)
             await self.db.finish_usage(event_id, result.model, result.usage)
             if final_text and not temporary:
                 await self.db.save_message(

@@ -15,11 +15,19 @@ from enan_ultra.storage.database import Database
 
 def test_update_id_claim_is_atomic_and_retention_is_bounded(tmp_path) -> None:
     async def scenario() -> None:
-        db = Database(tmp_path / "state.sqlite3")
+        database_path = tmp_path / "state.sqlite3"
+        db = Database(database_path)
+        peer_db = Database(database_path)
         await db.open()
+        await peer_db.open()
         try:
             claims = await asyncio.gather(*(db.claim_update(778899) for _ in range(24)))
             assert sum(claims) == 1
+            across_instances = await asyncio.gather(*(
+                (db if index % 2 == 0 else peer_db).claim_update(778901)
+                for index in range(24)
+            ))
+            assert sum(across_instances) == 1
             assert await db.claim_update(778900)
             assert not await db.claim_update(778900)
 
@@ -32,6 +40,7 @@ def test_update_id_claim_is_atomic_and_retention_is_bounded(tmp_path) -> None:
             assert await db.claim_update(778899)
         finally:
             await db.close()
+            await peer_db.close()
 
     asyncio.run(scenario())
 

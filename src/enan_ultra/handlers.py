@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import httpx
 from PIL import Image
 from telegram import (
-    BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Update, WebAppInfo,
+    InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Update, WebAppInfo,
 )
 from telegram.constants import ChatAction
 from telegram.error import BadRequest, TelegramError
@@ -55,10 +55,12 @@ from enan_ultra.services.document_export import DocumentExportService
 from enan_ultra.services.telegram_messages import TelegramRichMessageService
 from enan_ultra.services.theme_engine import AdaptiveThemeEngine
 from enan_ultra.services.conversation_style import decorate_reply, StickerSelector
+from enan_ultra.services.style_profile import StyleProfileStore
 from enan_ultra.services.telegram_zip_updates import (
     StagedUpdate, TelegramZipUpdateManager, UPDATE_CALLBACK_HASH_PREFIX_LENGTH, redact_secrets,
 )
 from enan_ultra.services.telegram_deployment import TelegramDeploymentClient
+from enan_ultra.command_menu import register_command_menus
 from enan_ultra.sticker_collector import (
     STICKER_CATEGORIES, StickerCollectorService,
 )
@@ -106,6 +108,7 @@ class BotHandlers:
         self.messages = TelegramRichMessageService()
         self.document_exports = DocumentExportService()
         self.theme_engine = AdaptiveThemeEngine()
+        self.style_profiles = StyleProfileStore(db)
         self.sticker_collector = StickerCollectorService(db, settings)
         self._sticker_import_cancellations: dict[int, asyncio.Event] = {}
         self._sticker_user_locks: dict[int, asyncio.Lock] = {}
@@ -203,64 +206,8 @@ class BotHandlers:
         app.add_handler(TypeHandler(Update, self.on_extension_update), group=-1)
 
     async def register_commands(self, app: Application) -> None:
-        names = [
-            ("start", "Start the bot"), ("help", "Show commands and help"), ("reset", "Clear conversation history"),
-            ("clear", "Clear conversation memory"),
-            ("live", "Contact an administrator"), ("exit", "End the live session"), ("id", "Show your IDs"),
-            ("voice", "Toggle voice replies"), ("make_sticker", "Turn a photo into a sticker"),
-            ("summary", "Summarize recent group chat"), ("setmode", "Set this chat's assistant mode"),
-            ("read", "Summarize a public webpage"),
-            ("media", "Toggle media processing"), ("style", "Set reply style"),
-            ("language", "Set reply language"),
-            ("format", "Set the reply format"),
-            ("temporary", "Toggle temporary chat"),
-            ("persona", "Set the assistant persona"),
-            ("timezone", "Set your time zone"),
-            ("memory", "Manage long-term memory"), ("remember", "Save a memory"), ("forget", "Delete memories"),
-            ("files", "List saved files"), ("forget_files", "Delete saved file text"), ("privacy", "Manage privacy and data"),
-            ("remind", "Create a reminder"), ("reminders", "List or manage reminders"),
-            ("cancelreminder", "Cancel a reminder"), ("snooze", "Snooze a pending reminder"),
-            ("tasks", "Manage your task list"),
-            ("search", "Search the live web"),
-            ("research", "Search the live web"),
-            ("historysearch", "Search recent chat history"),
-            ("document", "Document help and saved files"),
-            ("translate", "Translate text"),
-            ("web", "Toggle web search"), ("image", "Generate an image"),
-            ("imagine", "Generate an image"), ("usage", "Show usage"),
-            ("cancel", "Stop the current AI response"),
-            ("export", "Export your private conversation"),
-            ("theme", "Choose an adaptive visual theme"),
-            ("app", "Open the OMEGA AI Mini App"),
-            ("agents", "Toggle specialist reviews"), ("study", "Manage study mode"),
-            ("kb", "Manage your personal knowledge base"), ("feedback", "Rate a response"),
-            ("knowledge", "Manage your personal knowledge base"),
-            ("approve", "Approve a pending request"), ("deny", "Deny a pending request"),
-            ("test", "Request a sandbox project test"), ("patch", "Request a project patch"),
-            ("emoji", "Set emoji frequency: minimal|balanced|expressive"), ("stickers", "Set sticker mode: off|smart|frequent"),
-            ("preferences", "Show your saved preferences"), ("resetpreferences", "Reset presentation preferences to defaults"),
-            ("mission", "Start or manage a durable analysis mission"),
-            ("mission_new", "Start an informational mission"),
-            ("mission_status", "Check a mission status"), ("mission_list", "List your missions"),
-            ("mission_pause", "Pause a mission"), ("mission_resume", "Resume a mission"),
-            ("mission_cancel", "Cancel a mission"), ("mission_report", "Show a mission report"),
-            ("mission_delete", "Delete a mission and its stored details"),
-            ("evolve_status", "Evolution proposal overview"),
-            ("evolve_pending", "List pending code proposals"),
-            ("evolve_review", "Review an exact proposal diff"),
-            ("evolve_test", "Run an isolated patch test"),
-            ("evolve_approve", "Approve a patch for sandbox staging"),
-            ("evolve_stage", "Verify a staged candidate in isolation"),
-            ("evolve_deploy_approve", "Record separate production approval"),
-            ("evolve_cancel", "Cancel an evolution proposal"),
-            ("learning_status", "Show learning signal status"),
-            ("learning_pause", "Pause new improvement signal aggregation"),
-            ("learning_resume", "Resume improvement signal aggregation"),
-        ]
-        try:
-            await app.bot.set_my_commands([BotCommand(command, description) for command, description in names])
-        except Exception as exc:
-            logger.info("Telegram command menu was not updated (%s)", type(exc).__name__)
+        # Re-apply every scope together whenever the bot command catalog changes.
+        await register_command_menus(app.bot, self.settings)
 
     async def _gate(
         self, update: Update, *, admin: bool = False, allow_blocked: bool = False,
@@ -269,12 +216,12 @@ class BotHandlers:
         msg = update.effective_message
         if not user or not msg:
             return False
+        if admin and not is_admin(self.settings, user.id):
+            await msg.reply_text("This command is available to authorized administrators only.")
+            return False
         if not allow_blocked and await self.db.is_user_blocked(user.id):
             return False
         if update.effective_chat and update.effective_chat.id == self.settings.admin_chat_id and not is_admin(self.settings, user.id):
-            return False
-        if admin and not is_admin(self.settings, user.id):
-            await msg.reply_text("This command is available to authorized administrators only.")
             return False
         if not is_authorized(self.settings, user.id):
             await msg.reply_text("You are not authorized to use this bot.")
@@ -654,7 +601,8 @@ class BotHandlers:
                     )
                     accepted = result.get("accepted") is True
                     outcome = (
-                        "Deployment broker accepted the exact reviewed release."
+                        "Deployment request queued for root operator authorization; "
+                        "the broker has not activated the release yet."
                         if accepted else "Deployment broker did not accept the request."
                     )
                 except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
@@ -745,15 +693,37 @@ class BotHandlers:
         if not args:
             current = await self.theme_engine.current(self.db, user_id)
             label = current.theme.get("label", {}).get("bn", current.theme_id)
+            tracking = await self.db.get_preference(user_id, "theme_tracking", "on")
+            learning = await self.db.get_preference(user_id, "theme_learning", "on")
             await update.effective_message.reply_text(
                 f"এখনকার theme: {current.theme.get('icon', '✨')} {label} · {current.mode}\n\n"
-                "ব্যবহার: /theme auto|off|reset|learning on|off\n"
+                f"Topic detection: {tracking}; favorite-based preference: {learning}.\n"
+                "ব্যবহার: /theme auto|off|reset|tracking on|off|learning on|off\n"
+                "tracking off নতুন topic detection ও metadata বন্ধ করে এবং আগের detected metadata মুছে; chat history থাকে।\n"
+                "Topic metadata শুধু private chat-এ রাখা হয় এবং ৯০ দিনে মুছে যায়; group ও temporary chat-এ save হয় না।\n"
+                "learning off favorites থেকে fallback বন্ধ করে; saved favorites থাকে। মুছতে /theme reset ব্যবহার করো।\n"
                 "থিম: programming, chemistry, physics, mathematics, space, biology, ai_robotics, business, education, general"
             )
             return
         if args[0] == "reset":
             await self.theme_engine.reset(self.db, user_id)
-            await update.effective_message.reply_text("Visual preference মুছে Auto theme চালু হয়েছে।")
+            await update.effective_message.reply_text(
+                "Visual preferences reset হয়েছে; Auto theme ও topic detection আবার চালু হয়েছে।"
+            )
+            return
+        if args[0] == "tracking":
+            if len(args) != 2 or args[1] not in {"on", "off"}:
+                await update.effective_message.reply_text("ব্যবহার: /theme tracking on|off")
+                return
+            enabled = args[1] == "on"
+            await self.theme_engine.set_tracking(self.db, user_id, enabled)
+            await update.effective_message.reply_text(
+                "পরের private message থেকে automatic topic detection ও সর্বোচ্চ ৯০ দিনের topic metadata চালু হবে। "
+                "Group/temporary chat-এর metadata save হবে না।"
+                if enabled else
+                "Automatic topic detection বন্ধ; saved detected-topic metadata মুছে ফেলা হয়েছে। "
+                "Conversation history অক্ষত আছে।"
+            )
             return
         if args[0] == "learning":
             if len(args) != 2 or args[1] not in {"on", "off"}:
@@ -761,7 +731,10 @@ class BotHandlers:
                 return
             await self.theme_engine.update_setting(self.db, user_id, "theme_learning", args[1])
             await update.effective_message.reply_text(
-                "Theme preference শেখা চালু হয়েছে।" if args[1] == "on" else "Theme preference শেখা বন্ধ হয়েছে।"
+                "Favorite-theme preference ব্যবহার ও পরিবর্তন চালু হয়েছে।"
+                if args[1] == "on" else
+                "Favorite-theme preference আর ব্যবহার বা পরিবর্তন হবে না; saved favorites থাকবে। "
+                "Automatic topic detection আলাদা—সেটি বন্ধ করতে /theme tracking off ব্যবহার করো।"
             )
             return
         if args[0] in {"auto", "off"}:
@@ -846,9 +819,12 @@ class BotHandlers:
             "Conversation: /clear or /reset (clear private history and long-term memories), /live, /exit, /id\n"
             "Generation: /cancel stops the current AI response; /export md|txt|pdf exports private history; "
             "/export file ID md|txt exports an extracted document\n"
-            "Preferences: /voice on|off, /media on|off, /style natural|concise|detailed\n"
+            "Preferences: /voice on|off, /media on|off, /style natural|concise|detailed, "
+            "/style profile on|status|off|delete\n"
             "Presentation: /emoji minimal|balanced|expressive, /stickers off|smart|frequent, "
             "/preferences, /resetpreferences\n"
+            "Themes: /theme auto|off, /theme tracking on|off, /theme learning on|off; tracking controls "
+            "topic detection/metadata, learning controls favorite-based fallback\n"
             "Language: /language bn|en|auto, /format text|markdown|json\n"
             "Chat: /temporary on|off; persona: /persona default|expert|creative|research|tutor|professional|debate\n"
             "Time zone: /timezone Area/City\n"
@@ -1261,13 +1237,72 @@ class BotHandlers:
     async def style(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._gate(update):
             return
+        user_id = update.effective_user.id
+        if context.args and context.args[0].casefold() == "profile":
+            chat = update.effective_chat
+            if not chat or chat.type != "private":
+                await update.effective_message.reply_text(
+                    "Style profile controls কাজ করতে ব্যক্তিগত chat-এ ব্যবহার করো।"
+                )
+                return
+            action = context.args[1].casefold() if len(context.args) > 1 else "status"
+            if len(context.args) > 2 or action not in {"on", "status", "off", "delete"}:
+                await update.effective_message.reply_text(
+                    "ব্যবহার: /style profile on|status|off|delete"
+                )
+                return
+            if action == "on":
+                await self.style_profiles.enable(user_id)
+                await update.effective_message.reply_text(
+                    "Style profile opt-in চালু। এখন থেকে private text-এ স্পষ্ট style নির্দেশনা "
+                    "local rule দিয়ে পড়ে শুধু অনুমোদিত enum preference রাখব—profile-এ raw message নয়। "
+                    "কোনো provider-এ পাঠানো হবে না; profile-এর মেয়াদ শেষ হবে শেষ update-এর ৯০ দিন পরে। "
+                    "আগের chat পড়া হবে না। Normal chat history আলাদা retention-এ থাকে। "
+                    "Temporary mode-এ profile ব্যবহার বা update হবে না।"
+                )
+                return
+            if action == "off":
+                await self.style_profiles.disable(user_id)
+                await update.effective_message.reply_text(
+                    "Style profile collection ও application বন্ধ। আগে রাখা preference expiry পর্যন্ত থাকবে; "
+                    "তাৎক্ষণিক মুছতে /style profile delete ব্যবহার করো।"
+                )
+                return
+            if action == "delete":
+                await self.style_profiles.delete(user_id)
+                await update.effective_message.reply_text(
+                    "Style profile এখনই মুছে ফেলা হয়েছে এবং collection বন্ধ।"
+                )
+                return
+            status = await self.style_profiles.status(user_id)
+            values = status["values"]
+            labels = {
+                "style": "tone", "language": "language", "emoji_frequency": "emoji",
+                "response_format": "format", "sticker_mode": "stickers",
+            }
+            saved = ", ".join(f"{labels[key]}={value}" for key, value in sorted(values.items()))
+            details = saved or "কোনো style value রাখা নেই"
+            expiry = status["expires_at"]
+            until = f"; expiry {expiry[:10]}" if expiry else ""
+            await update.effective_message.reply_text(
+                f"Style profile: {'on' if status['enabled'] else 'off'}; {details}{until}. "
+                "শুধু enum preference রাখা হয়, raw message নয়।"
+            )
+            return
         if context.args:
             value = context.args[0].lower()
             if value not in {"natural", "concise", "detailed"}:
-                await update.effective_message.reply_text("Usage: /style natural|concise|detailed")
+                await update.effective_message.reply_text(
+                    "Usage: /style natural|concise|detailed; profile: /style profile on|status|off|delete"
+                )
                 return
-            await self.db.set_preference(update.effective_user.id, "style", value)
-        value = await self.db.get_preference(update.effective_user.id, "style", "natural")
+            await self.db.set_preference(user_id, "style", value)
+            chat = update.effective_chat
+            await self.style_profiles.learn_explicit_preference(
+                user_id, "style", value,
+                private_chat=bool(chat and chat.type == "private"),
+            )
+        value = await self.db.get_preference(user_id, "style", "natural")
         await update.effective_message.reply_text(f"Reply style: {value}")
 
     async def language(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1278,7 +1313,13 @@ class BotHandlers:
             if value not in {"bn", "en", "auto"}:
                 await update.effective_message.reply_text("Usage: /language bn|en|auto")
                 return
-            await self.db.set_preference(update.effective_user.id, "language", value)
+            user_id = update.effective_user.id
+            await self.db.set_preference(user_id, "language", value)
+            chat = update.effective_chat
+            await self.style_profiles.learn_explicit_preference(
+                user_id, "language", value,
+                private_chat=bool(chat and chat.type == "private"),
+            )
         value = await self.db.get_preference(update.effective_user.id, "language", "bn")
         label = {"bn": "Bengali", "en": "English", "auto": "automatic"}[value]
         await update.effective_message.reply_text(f"Reply language preference: {label}. I will follow a clearly different language used in your message.")
@@ -1291,7 +1332,13 @@ class BotHandlers:
             if value not in {"text", "markdown", "json"}:
                 await update.effective_message.reply_text("Usage: /format text|markdown|json")
                 return
-            await self.db.set_preference(update.effective_user.id, "response_format", value)
+            user_id = update.effective_user.id
+            await self.db.set_preference(user_id, "response_format", value)
+            chat = update.effective_chat
+            await self.style_profiles.learn_explicit_preference(
+                user_id, "response_format", value,
+                private_chat=bool(chat and chat.type == "private"),
+            )
         value = await self.db.get_preference(update.effective_user.id, "response_format", "text")
         await update.effective_message.reply_text(f"Reply format: {value}")
 
@@ -1367,6 +1414,11 @@ class BotHandlers:
                 await update.effective_message.reply_text("Usage: /emoji minimal|balanced|expressive")
                 return
             await self.db.set_preference(user_id, "emoji_frequency", val)
+            chat = update.effective_chat
+            await self.style_profiles.learn_explicit_preference(
+                user_id, "emoji_frequency", val,
+                private_chat=bool(chat and chat.type == "private"),
+            )
             await update.effective_message.reply_text(f"Emoji frequency set to {val}.")
             return
         current = await self.db.get_preference(user_id, "emoji_frequency", "balanced")
@@ -1383,6 +1435,11 @@ class BotHandlers:
                 await update.effective_message.reply_text("Usage: /stickers off|smart|frequent")
                 return
             await self.db.set_preference(user_id, "sticker_mode", val)
+            chat = update.effective_chat
+            await self.style_profiles.learn_explicit_preference(
+                user_id, "sticker_mode", val,
+                private_chat=bool(chat and chat.type == "private"),
+            )
             await update.effective_message.reply_text(f"Sticker mode set to {val}.")
             return
         current = await self.db.get_preference(user_id, "sticker_mode", "smart")
@@ -1415,7 +1472,10 @@ class BotHandlers:
         await self.db.set_preference(user_id, "sticker_mode", "smart")
         await self.db.set_preference(user_id, "style", "natural")
         await self.db.set_preference(user_id, "persona", "default")
-        await update.effective_message.reply_text("Presentation preferences have been reset to defaults.")
+        await self.style_profiles.delete(user_id)
+        await update.effective_message.reply_text(
+            "Presentation preferences and saved style profile have been reset; style-profile collection is off."
+        )
 
     async def collect_stickers_on(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE,
@@ -1756,6 +1816,8 @@ class BotHandlers:
         await update.effective_message.reply_text(
             f"Privacy and data: The most recent {self.settings.history_messages} messages are stored in SQLite. In private chats, /clear or /reset deletes chat history and long-term memory. "
             "/privacy export provides your data as JSON; /privacy delete confirm deletes account data. "
+            "Adaptive themes use the current message and recent chat history; /theme tracking off stops new topic detection and deletes detected-topic metadata, but does not delete chat history. /theme learning off stops using/changing favorite-based fallback; favorites remain until reset or account deletion. "
+            "Style profile is off until /style profile on. After opt-in, explicit private-chat style requests are parsed locally into allowlisted tone/language/emoji/format/sticker values only; no raw text or provider extraction is used. Values expire 90 days after their last update. /style profile off disables collection/use; /style profile delete erases them now. Temporary chats neither use nor update the profile. Normal message history remains separate. "
             "In private chats, /temporary on prevents new message history from being saved and prior memory/document/KB content from being retrieved; "
             "documents uploaded during temporary chats are not persistently indexed. "
             "Long-term memory is off by default. /memory on enables it and explicitly enables asynchronous fact extraction; this sends private-chat text to the configured OpenRouter model. Personal facts stay user-scoped; explicitly general knowledge may be shared as untrusted context. /memory learn off stops automatic extraction while keeping saved memories; /memory off disables both, and /forget all deletes saved facts. "
@@ -3711,15 +3773,18 @@ class BotHandlers:
             await msg.reply_text("I'm still preparing a reply to your previous message. Please wait.")
             return
         async with lock:
-            profile = await self._profile(user.id, user.full_name)
-            if await self.db.is_live(user.id):
-                await self._notify_admin(update, context)
-                await msg.reply_text("Your message has been sent to an administrator.")
-                return
             temporary = (
                 chat.type == "private"
                 and await self.db.get_preference(user.id, "temporary_chat", "off") == "on"
             )
+            profile = await self._profile(
+                user.id, user.full_name,
+                include_style_profile=chat.type == "private" and not temporary,
+            )
+            if await self.db.is_live(user.id):
+                await self._notify_admin(update, context)
+                await msg.reply_text("Your message has been sent to an administrator.")
+                return
             remembered = await self.db.memories(user.id) if profile.memory_enabled and not temporary else []
             learning_paused = await self.db.get_setting("learning_paused") == "on"
             user_facts: dict[str, str] = {}
@@ -3774,7 +3839,8 @@ class BotHandlers:
                     self.settings.max_input_chars,
                 )
             theme_decision = await self.theme_engine.resolve(
-                self.db, user.id, prompt, history, persist=not temporary,
+                self.db, user.id, prompt, history,
+                persist=not temporary and chat.type == "private",
             )
             chat_mode = await self.db.get_chat_mode(chat.id)
             system = self._system_prompt(
@@ -3900,6 +3966,16 @@ class BotHandlers:
                 final_answer = final_answer.strip() or "Sorry, I could not generate a response this time."
                 if len(final_answer) > self.settings.max_output_chars:
                     final_answer = final_answer[:self.settings.max_output_chars].rstrip() + "\n\n[The response was shortened to fit the configured output limit.]"
+                if (
+                    chat.type == "private" and not temporary and msg.text
+                    and not media_parts and not attachment_text and not voice_input
+                ):
+                    try:
+                        await self.style_profiles.learn_message(
+                            user.id, msg.text, private_chat=True, temporary=False,
+                        )
+                    except Exception as exc:
+                        logger.warning("Could not update opted-in style profile (%s)", type(exc).__name__)
                 await self.db.finish_usage(event_id, model, usage)
                 if not temporary:
                     await self.db.save_message(chat.id, "assistant", final_answer[:self.settings.max_output_chars], self.settings.history_messages)
@@ -4061,13 +4137,24 @@ class BotHandlers:
             model_id,
         )
 
-    async def _profile(self, user_id: int, name: str) -> UserProfile:
+    async def _profile(
+        self, user_id: int, name: str, *, include_style_profile: bool = False,
+    ) -> UserProfile:
         memory_default = "on" if self.settings.memory_enabled_by_default else "off"
         agent_default = "on" if self.settings.agent_enabled_by_default else "off"
+        style_values = (
+            await self.style_profiles.active_values(
+                user_id, private_chat=True, temporary=False,
+            ) if include_style_profile else {}
+        )
         return UserProfile(
             name=name,
-            language=await self.db.get_preference(user_id, "language", "bn"),
-            style=await self.db.get_preference(user_id, "style", "natural"),
+            language=style_values.get(
+                "language", await self.db.get_preference(user_id, "language", "bn"),
+            ),
+            style=style_values.get(
+                "style", await self.db.get_preference(user_id, "style", "natural"),
+            ),
             voice_enabled=await self.db.get_preference(user_id, "voice", "off") == "on",
             media_enabled=await self.db.get_preference(user_id, "media_enabled", "on") == "on",
             memory_enabled=await self.db.get_preference(user_id, "memory_enabled", memory_default) == "on",
@@ -4075,7 +4162,9 @@ class BotHandlers:
             agents_enabled=await self.db.get_preference(user_id, "agents_enabled", agent_default) == "on",
             kb_enabled=self.settings.kb_enabled and await self.db.get_preference(user_id, "kb_enabled", "off") == "on",
             study_enabled=await self.db.get_preference(user_id, "study_enabled", "off") == "on",
-            response_format=await self.db.get_preference(user_id, "response_format", "text"),
+            response_format=style_values.get(
+                "response_format", await self.db.get_preference(user_id, "response_format", "text"),
+            ),
             persona=await self.db.get_preference(user_id, "persona", "default"),
             custom_instructions=(await self.db.get_preference(user_id, "custom_instructions", ""))[:500],
         )
@@ -4296,10 +4385,24 @@ class BotHandlers:
     ) -> None:
         msg = update.effective_message
         user = update.effective_user
+        chat = update.effective_chat
         profile = None
+        style_values: dict[str, str] = {}
         try:
             if user:
-                profile = await self._profile(user.id, user.full_name)
+                private_chat = bool(chat and chat.type == "private")
+                temporary = (
+                    private_chat
+                    and await self.db.get_preference(user.id, "temporary_chat", "off") == "on"
+                )
+                if private_chat and not temporary:
+                    style_values = await self.style_profiles.active_values(
+                        user.id, private_chat=True, temporary=False,
+                    )
+                profile = await self._profile(
+                    user.id, user.full_name,
+                    include_style_profile=private_chat and not temporary,
+                )
         except sqlite3.Error as exc:
             logger.warning("Could not load sticker presentation preferences (%s)", type(exc).__name__)
             profile = None
@@ -4324,7 +4427,10 @@ class BotHandlers:
             logger.warning("Could not load recent prompt for sticker selection (%s)", type(exc).__name__)
 
         try:
-            frequency = await self.db.get_preference(user.id, "emoji_frequency", "balanced") if user else "balanced"
+            frequency = (
+                style_values.get("emoji_frequency")
+                or (await self.db.get_preference(user.id, "emoji_frequency", "balanced") if user else "balanced")
+            )
             personality = getattr(profile, "persona", "friendly") if profile else "friendly"
             response_format = getattr(profile, "response_format", "text") if profile else "text"
             decorated = decorate_reply(
@@ -4339,15 +4445,19 @@ class BotHandlers:
 
         if not user:
             return
-        await self._send_contextual_sticker(user.id, last_user_prompt or text, decorated, msg)
+        await self._send_contextual_sticker(
+            user.id, last_user_prompt or text, decorated, msg,
+            sticker_mode=style_values.get("sticker_mode"),
+        )
 
     async def _send_contextual_sticker(
         self, user_id: int, prompt: str, response: str, msg: Any,
+        *, sticker_mode: str | None = None,
     ) -> None:
         lock = self._sticker_user_locks.setdefault(user_id, asyncio.Lock())
         async with lock:
             try:
-                sticker_mode = await self.db.get_preference(user_id, "sticker_mode", "smart")
+                sticker_mode = sticker_mode or await self.db.get_preference(user_id, "sticker_mode", "smart")
                 if sticker_mode == "off":
                     return
                 last_used = await self.db.last_user_sticker_use(user_id)
@@ -4468,7 +4578,8 @@ class BotHandlers:
                 update.effective_chat.id, max(0, self.settings.history_messages - 1),
             )
         theme_decision = await self.theme_engine.resolve(
-            self.db, user.id, snippet, history, persist=not temporary,
+            self.db, user.id, snippet, history,
+            persist=not temporary and update.effective_chat.type == "private",
         )
         notification = await self.messages.send_support_request(
             context.bot, self.settings.admin_chat_id, user.id,

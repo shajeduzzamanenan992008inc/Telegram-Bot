@@ -12,7 +12,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from telegram import BotCommand, BotCommandScopeChat, MenuButtonWebApp, WebAppInfo
+from telegram import MenuButtonWebApp, WebAppInfo
 from telegram.ext import (
     Application, ApplicationBuilder, ContextTypes, InlineQueryHandler, MessageHandler, filters,
 )
@@ -36,64 +36,6 @@ from enan_ultra.sticker_collector import inline_sticker_query
 from enan_ultra.storage.database import Database
 
 logger = logging.getLogger(__name__)
-
-
-def _admin_command_menu() -> list[BotCommand]:
-    return [
-        BotCommand("model", "Change the current AI model"),
-        BotCommand("models", "List models from configured providers"),
-        BotCommand("status", "Bot status"),
-        BotCommand("providers", "Configured provider health"),
-        BotCommand("providerdiag", "Provider circuit and credential diagnostics"),
-        BotCommand("admin", "Open the administrator menu"),
-        BotCommand("update", "Stage and review a ZIP code update"),
-        BotCommand("theme", "Choose adaptive visual themes"),
-        BotCommand("app", "Open the OMEGA AI workspace"),
-        BotCommand("end", "End a live session"),
-        BotCommand("endall", "End all live sessions"),
-        BotCommand("end_all", "End all live sessions"),
-        BotCommand("clearuser", "Clear a user's conversation memory"),
-        BotCommand("resetuser", "Clear a user's conversation memory"),
-        BotCommand("device", "Allowlisted Home Assistant control"),
-        BotCommand("vm", "Bot service status/restart"),
-        BotCommand("block", "Block a user's bot access"),
-        BotCommand("unblock", "Unblock a user's bot access"),
-        BotCommand("tasks", "Manage your personal task list"),
-        BotCommand("voice", "Toggle AI voice replies"),
-        BotCommand("image", "Generate an image"),
-        BotCommand("imagine", "Generate an image"),
-        BotCommand("search", "Search the live web"),
-        BotCommand("historysearch", "Search recent chat history"),
-        BotCommand("collect_on", "Enable admin-only sticker collection"),
-        BotCommand("collect_off", "Disable sticker collection"),
-        BotCommand("import_sticker_set", "Import a sticker pack for review"),
-        BotCommand("cancel_sticker_import", "Cancel your active sticker import"),
-        BotCommand("sticker_stats", "Show sticker catalog health"),
-        BotCommand("sticker_search", "Search sticker metadata"),
-        BotCommand("sticker_review", "List stickers pending approval"),
-        BotCommand("sticker_categorize", "Categorize and approve a sticker"),
-        BotCommand("sticker_export", "Export sticker catalog metadata"),
-        BotCommand("evolve_status", "Evolution proposal history"),
-        BotCommand("evolve_pending", "Pending evolution proposals"),
-        BotCommand("evolve_review", "Review a patch and test report"),
-        BotCommand("evolve_test", "Run an isolated patch test"),
-        BotCommand("evolve_approve", "Approve a patch for sandbox staging"),
-        BotCommand("evolve_stage", "Verify a staging candidate"),
-        BotCommand("evolve_deploy_approve", "Record production approval"),
-        BotCommand("evolve_cancel", "Cancel an evolution proposal"),
-        BotCommand("learning_status", "Show learning signal status"),
-        BotCommand("learning_pause", "Pause improvement signals"),
-        BotCommand("learning_resume", "Resume improvement signals"),
-        BotCommand("mission_new", "Start a private analysis mission"),
-        BotCommand("mission", "Mission Control menu"),
-        BotCommand("mission_list", "List your missions"),
-        BotCommand("mission_status", "Check a mission status"),
-        BotCommand("mission_pause", "Pause a mission"),
-        BotCommand("mission_resume", "Resume a mission"),
-        BotCommand("mission_cancel", "Cancel a mission"),
-        BotCommand("mission_report", "Show a mission report"),
-        BotCommand("mission_delete", "Delete a mission"),
-    ]
 
 
 def build_application(settings: Settings) -> Application:
@@ -177,20 +119,14 @@ def build_application(settings: Settings) -> Application:
         )
         app.bot_data["database"] = db
         app.bot_data["sticker_collector"] = sticker_collector
+        app.bot_data["style_profiles"] = handlers.style_profiles
+        app.bot_data["theme_engine"] = handlers.theme_engine
         app.bot_data["openrouter"] = openrouter
         app.bot_data["provider_router"] = router
         app.bot_data["action_registry"] = actions
         app.bot_data["mission_control"] = missions
         app.bot_data["settings"] = settings
         await handlers.register_commands(app)
-        try:
-            admin_commands = _admin_command_menu()
-            for admin_scope_id in {settings.admin_chat_id, *settings.effective_admin_user_ids}:
-                await app.bot.set_my_commands(
-                    admin_commands, scope=BotCommandScopeChat(admin_scope_id),
-                )
-        except Exception as exc:
-            logger.info("Admin command menu was not updated (%s)", type(exc).__name__)
         if mini_app:
             try:
                 await app.bot.set_chat_menu_button(menu_button=MenuButtonWebApp(
@@ -292,6 +228,7 @@ def _write_deployment_health_marker(path: Path, telegram_bot_id: int) -> None:
         "started_at": time.time(),
         "database_open": True,
         "telegram_bot_id": telegram_bot_id,
+        "import_origin": str(Path(__file__).resolve()),
     }
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
@@ -330,6 +267,12 @@ async def _maintenance(
             await db.expire_evolution_proposals()
             await db.cleanup_mission_history()
             await db.cleanup_evolution_history()
+            style_profiles = app.bot_data.get("style_profiles")
+            if style_profiles:
+                await style_profiles.cleanup_expired()
+            theme_engine = app.bot_data.get("theme_engine")
+            if theme_engine:
+                await theme_engine.cleanup_expired(db)
             if update_manager:
                 await asyncio.to_thread(update_manager.cleanup_expired)
             await _cleanup_provider_files(db, router, settings, app)
