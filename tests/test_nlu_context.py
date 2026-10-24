@@ -53,7 +53,12 @@ def test_multilingual_messages_keep_original_text_and_follow_up_context(tmp_path
                     0, result=SimpleNamespace(mode="off", theme=None),
                 ),
             )
-            handlers._profile = lambda _user_id, name: asyncio.sleep(
+            theme_persistence: list[bool] = []
+            handlers.theme_engine.resolve = lambda *_args, **kwargs: (
+                theme_persistence.append(kwargs["persist"])
+                or asyncio.sleep(0, result=SimpleNamespace(mode="off", theme=None))
+            )
+            handlers._profile = lambda _user_id, name, **_kwargs: asyncio.sleep(
                 0, result=UserProfile(
                     name=name, language="auto", memory_enabled=False,
                     media_enabled=False, agents_enabled=False,
@@ -77,7 +82,7 @@ def test_multilingual_messages_keep_original_text_and_follow_up_context(tmp_path
             update = SimpleNamespace(
                 effective_user=SimpleNamespace(id=update_user_id, full_name="Tester"),
                 effective_chat=SimpleNamespace(id=update_user_id, type="private"),
-                effective_message=SimpleNamespace(reply_text=reply_text),
+                effective_message=SimpleNamespace(reply_text=reply_text, text=""),
             )
             context = SimpleNamespace(bot=SimpleNamespace(
                 send_chat_action=send_chat_action,
@@ -95,8 +100,10 @@ def test_multilingual_messages_keep_original_text_and_follow_up_context(tmp_path
                 "ওটা করো",
             ]
             for prompt in inputs:
+                update.effective_message.text = prompt
                 await handlers._chat(update, context, prompt)
 
+            assert theme_persistence == [True] * len(inputs)
             assert [call[-1]["content"] for call in calls] == inputs
             system = calls[0][0]["content"]
             assert isinstance(system, str)
@@ -113,7 +120,7 @@ def test_multilingual_messages_keep_original_text_and_follow_up_context(tmp_path
             other_user = SimpleNamespace(
                 effective_user=SimpleNamespace(id=72, full_name="Other"),
                 effective_chat=SimpleNamespace(id=72, type="private"),
-                effective_message=SimpleNamespace(reply_text=reply_text),
+                effective_message=SimpleNamespace(reply_text=reply_text, text="hello"),
             )
             await handlers._chat(other_user, context, "hello")
             assert all(message["content"] != inputs[0] for message in calls[-1][1:])
@@ -172,12 +179,13 @@ def test_provider_timeout_is_reported_as_service_failure(tmp_path: Path) -> None
             )
             router = Router()
             handlers = BotHandlers(settings, db, router, None, None, None)
-            handlers.theme_engine = SimpleNamespace(
-                resolve=lambda *_args, **_kwargs: asyncio.sleep(
-                    0, result=SimpleNamespace(mode="off", theme=None),
-                ),
-            )
-            handlers._profile = lambda *_args: asyncio.sleep(
+            theme_persistence: list[bool] = []
+            async def resolve_theme(*_args, **kwargs):
+                theme_persistence.append(kwargs["persist"])
+                return SimpleNamespace(mode="off", theme=None)
+
+            handlers.theme_engine = SimpleNamespace(resolve=resolve_theme)
+            handlers._profile = lambda *_args, **_kwargs: asyncio.sleep(
                 0, result=UserProfile(memory_enabled=False, media_enabled=False),
             )
             handlers._request_allowed = lambda *_args, **_kwargs: asyncio.sleep(0, result=1)
@@ -197,6 +205,7 @@ def test_provider_timeout_is_reported_as_service_failure(tmp_path: Path) -> None
             )
             context = SimpleNamespace(bot=SimpleNamespace(send_chat_action=send_chat_action))
             await handlers._chat(update, context, "ami programing sikta cai")
+            assert theme_persistence == [False]
             assert replies == ["The AI service is unavailable right now. Please try again later."]
             assert not any("incomprehensible" in item.casefold() for item in replies)
 

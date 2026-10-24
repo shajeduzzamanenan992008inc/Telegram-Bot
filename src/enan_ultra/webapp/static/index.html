@@ -94,9 +94,10 @@
         <label>Appearance<select id="appearance"><option value="system">System</option><option value="dark">Dark</option><option value="light">Light</option></select></label>
         <label>Animation<select id="animation"><option value="auto">Auto</option><option value="full">Full</option><option value="reduced">Reduced</option><option value="off">Off</option></select></label>
         <label>Accent palette<select id="palette"><option value="default">Adaptive</option><option value="teal">Teal</option><option value="violet">Violet</option><option value="amber">Amber</option><option value="rose">Rose</option></select></label>
-        <label class="learning-setting"><span>পছন্দ শেখা</span><span class="switch-wrap"><input id="learning" type="checkbox"><span class="switch" aria-hidden="true"></span></span></label>
+        <label class="learning-setting"><span>প্রিয় theme preference</span><span class="switch-wrap"><input id="learning" type="checkbox"><span class="switch" aria-hidden="true"></span></span></label>
+        <label class="learning-setting"><span>Automatic topic detection</span><span class="switch-wrap"><input id="tracking" type="checkbox"><span class="switch" aria-hidden="true"></span></span></label>
       </div>
-      <p class="settings-note">পছন্দ শেখা বন্ধ করলে নতুন theme feedback আর সংরক্ষণ হবে না। Reset করলে রাখা visual preference মুছে Auto mode চালু হবে।</p>
+      <p class="settings-note">প্রিয় theme preference বন্ধ করলে favorite থেকে fallback আর বদলাবে না; saved favorite মুছবে না। Topic detection বন্ধ করলে নতুন message/context বিশ্লেষণ ও theme topic metadata সংরক্ষণ বন্ধ হবে এবং আগের detected topic metadata মুছবে। Chat history আলাদা; /privacy delete confirm দিয়ে account data মুছো। Reset করলে defaults চালু হবে।</p>
       <button id="reset-theme" class="reset-button" type="button">Reset visual preferences</button>
     </section>
     <footer class="footer"><span id="footer-theme">✨ Adaptive Aurora</span><span>Private · Telegram verified</span></footer>

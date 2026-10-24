@@ -209,6 +209,8 @@ class Settings:
     update_max_depth: int
     update_max_path_length: int
     update_max_compression_ratio: int
+    update_extract_timeout_seconds: int
+    update_test_timeout_seconds: int
     update_deployment_enabled: bool
     update_deployment_socket_path: Path
     max_document_pages: int
@@ -483,10 +485,12 @@ class Settings:
             max_archive_expanded_bytes=_int("MAX_ARCHIVE_EXPANDED_BYTES", 50 * 1024 * 1024, 1024, 500 * 1024 * 1024),
             max_archive_files=_int("MAX_ARCHIVE_FILES", 100, 1, 2000),
             max_archive_depth=_int("MAX_ARCHIVE_DEPTH", 2, 0, 8),
-            update_max_files=_int("UPDATE_MAX_FILES", 250, 1, 5000),
+            update_max_files=_int("UPDATE_MAX_FILES", 1000, 1, 5000),
             update_max_depth=_int("UPDATE_MAX_DEPTH", 8, 1, 16),
             update_max_path_length=_int("UPDATE_MAX_PATH_LENGTH", 240, 64, 1024),
             update_max_compression_ratio=_int("UPDATE_MAX_COMPRESSION_RATIO", 100, 1, 1000),
+            update_extract_timeout_seconds=_int("UPDATE_EXTRACT_TIMEOUT_SECONDS", 60, 1, 300),
+            update_test_timeout_seconds=_int("UPDATE_TEST_TIMEOUT_SECONDS", 180, 5, 300),
             update_deployment_enabled=_bool("UPDATE_DEPLOYMENT_ENABLED", False),
             update_deployment_socket_path=Path(
                 _value("UPDATE_DEPLOYMENT_SOCKET_PATH", "/run/telegram-ai-deploy.sock"),

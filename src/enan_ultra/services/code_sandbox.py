@@ -37,7 +37,9 @@ class SandboxReport:
     timed_out: bool = False
 
 
-def extract_project_zip(data: bytes, destination: Path, settings: Settings) -> list[Path]:
+def extract_project_zip(
+    data: bytes, destination: Path, settings: Settings, *, max_files: int | None = None,
+) -> list[Path]:
     if len(data) > settings.max_upload_bytes:
         raise ValueError("Project archive exceeds the configured upload limit")
     root = destination.resolve()
@@ -51,7 +53,9 @@ def extract_project_zip(data: bytes, destination: Path, settings: Settings) -> l
         raise ValueError("Project archive is damaged") from exc
     with archive:
         members = archive.infolist()
-        if len(members) > settings.sandbox_max_files:
+        if len(members) > (
+            settings.sandbox_max_files if max_files is None else max_files
+        ):
             raise ValueError("Project archive has too many files")
         for item in members:
             name = item.filename.replace("\\", "/")
@@ -214,12 +218,21 @@ class CodeSandbox:
     async def run_python_tests(self, archive_data: bytes) -> SandboxReport:
         return await self._run_python_tests(archive_data)
 
+    async def run_update_tests(self, archive_data: bytes) -> SandboxReport:
+        """Test the complete merged update candidate under update-specific bounds."""
+        return await self._run_python_tests(
+            archive_data,
+            max_files=self.settings.update_max_files,
+            timeout_seconds=self.settings.update_test_timeout_seconds,
+        )
+
     async def run_python_patch_tests(self, archive_data: bytes, patch_data: bytes) -> SandboxReport:
         patch_text = validate_evolution_patch(patch_data)
         return await self._run_python_tests(archive_data, patch_text.encode("utf-8"))
 
     async def _run_python_tests(
-        self, archive_data: bytes, patch_data: bytes | None = None,
+        self, archive_data: bytes, patch_data: bytes | None = None, *,
+        max_files: int | None = None, timeout_seconds: int | None = None,
     ) -> SandboxReport:
         if not self.settings.sandbox_enabled:
             raise RuntimeError("Code sandbox is disabled")
@@ -258,7 +271,9 @@ class CodeSandbox:
             temporary_root = Path(temporary)
             root = temporary_root / "source"
             root.mkdir(mode=0o700)
-            extract_project_zip(archive_data, root, self.settings)
+            extract_project_zip(
+                archive_data, root, self.settings, max_files=max_files,
+            )
             patch_path: Path | None = None
             if patch_data is not None:
                 patch_path = temporary_root / "candidate.patch"
@@ -306,7 +321,10 @@ class CodeSandbox:
             readers = [asyncio.create_task(read_limited(process.stdout)), asyncio.create_task(read_limited(process.stderr))]
             timed_out = False
             try:
-                await asyncio.wait_for(process.wait(), timeout=self.settings.sandbox_timeout_seconds)
+                await asyncio.wait_for(
+                    process.wait(),
+                    timeout=timeout_seconds or self.settings.sandbox_timeout_seconds,
+                )
             except TimeoutError:
                 timed_out = True
                 killer = await asyncio.create_subprocess_exec(

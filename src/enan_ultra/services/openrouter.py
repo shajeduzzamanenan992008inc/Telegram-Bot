@@ -525,25 +525,16 @@ class OpenRouter:
         raise ProviderError(f"All image generation models failed ({type(last_error).__name__ if last_error else 'unknown'})")
 
     async def _download_external_image(self, url: str) -> tuple[bytes, str]:
-        # Never follow redirects or allow local/private network targets.
-        from enan_ultra.security import validate_public_https_url
+        # This one-shot transport resolves once, validates every address, and connects
+        # to those numeric addresses while retaining the original hostname for TLS.
+        from enan_ultra.security import download_public_https_image
 
-        await validate_public_https_url(url)
-        # The image host is untrusted; never forward the OpenRouter Authorization header.
-        async with httpx.AsyncClient(follow_redirects=False, timeout=30) as downloader:
-            async with downloader.stream("GET", url) as image_response:
-                image_response.raise_for_status()
-                if not image_response.headers.get("content-type", "").lower().startswith("image/"):
-                    raise ProviderError("Image URL did not return an image")
-                media_type = image_response.headers["content-type"].split(";", 1)[0].strip().lower()
-                if media_type not in {"image/jpeg", "image/png", "image/webp"}:
-                    raise ProviderError("Generated image URL returned an unsupported image format")
-                output = bytearray()
-                async for part in image_response.aiter_bytes():
-                    output.extend(part)
-                    if len(output) > self.settings.max_image_bytes:
-                        raise ProviderError("Generated image exceeds MAX_IMAGE_BYTES")
-                return bytes(output), media_type
+        try:
+            return await download_public_https_image(
+                url, max_bytes=self.settings.max_image_bytes,
+            )
+        except (OSError, TimeoutError, ValueError) as exc:
+            raise ProviderError(f"Image URL could not be fetched safely ({type(exc).__name__})") from exc
 
     async def image_models(self) -> list[dict[str, Any]]:
         response = await self._request("GET", "/images/models")

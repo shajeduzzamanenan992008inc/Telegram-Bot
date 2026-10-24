@@ -10,9 +10,13 @@ from typing import Any
 
 
 class TelegramDeploymentClient:
-    def __init__(self, socket_path: Path, *, timeout_seconds: float = 8.0) -> None:
+    def __init__(
+        self, socket_path: Path, *, timeout_seconds: float = 8.0,
+        socket_connector: Any = None,
+    ) -> None:
         self.socket_path = socket_path
         self.timeout_seconds = timeout_seconds
+        self._socket_connector = socket_connector
 
     async def preflight(self) -> dict[str, Any]:
         response = await self._request({"operation": "preflight"})
@@ -23,14 +27,14 @@ class TelegramDeploymentClient:
         update_id: str,
         manifest_hash: str,
         archive_hash: str,
-        administrator_id: int,
+        claimed_administrator_id: int,
     ) -> dict[str, Any]:
         return await self._request({
-            "operation": "deploy",
+            "operation": "request_deploy",
             "update_id": update_id,
             "manifest_hash": manifest_hash,
             "archive_hash": archive_hash,
-            "administrator_id": administrator_id,
+            "claimed_administrator_id": claimed_administrator_id,
         })
 
     async def recent_results(self) -> list[dict[str, Any]]:
@@ -43,11 +47,12 @@ class TelegramDeploymentClient:
         return response.get("acknowledged") is True
 
     async def _request(self, payload: dict[str, object]) -> dict[str, Any]:
-        if os.name == "nt":
+        if os.name == "nt" and self._socket_connector is None:
             raise RuntimeError("The systemd deployment broker is available only on Linux.")
+        connect = self._socket_connector or asyncio.open_unix_connection
         try:
             reader, writer = await asyncio.wait_for(
-                asyncio.open_unix_connection(str(self.socket_path)),
+                connect(str(self.socket_path)),
                 timeout=self.timeout_seconds,
             )
         except (OSError, TimeoutError) as exc:

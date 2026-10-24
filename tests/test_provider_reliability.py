@@ -75,6 +75,22 @@ def test_clamav_configuration_is_opt_in_and_validates_socket_path(monkeypatch, t
         Settings.load()
 
 
+def test_zip_extraction_timeout_setting_is_present_and_bounded(monkeypatch, tmp_path: Path) -> None:
+    _settings_env(monkeypatch, tmp_path)
+    assert Settings.load().update_extract_timeout_seconds == 60
+    assert Settings.load().update_test_timeout_seconds == 180
+    assert Settings.load().update_max_files == 1000
+
+    monkeypatch.setenv("UPDATE_EXTRACT_TIMEOUT_SECONDS", "301")
+    with pytest.raises(ValueError, match="UPDATE_EXTRACT_TIMEOUT_SECONDS"):
+        Settings.load()
+
+    monkeypatch.setenv("UPDATE_EXTRACT_TIMEOUT_SECONDS", "60")
+    monkeypatch.setenv("UPDATE_TEST_TIMEOUT_SECONDS", "301")
+    with pytest.raises(ValueError, match="UPDATE_TEST_TIMEOUT_SECONDS"):
+        Settings.load()
+
+
 def test_strict_free_allowlist_and_paid_fallback_cost_gate() -> None:
     async def scenario() -> None:
         router = object.__new__(ProviderRouter)
