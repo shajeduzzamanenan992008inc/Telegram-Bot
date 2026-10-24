@@ -106,6 +106,30 @@ class Database:
         await cursor.close()
         return row is not None and int(row[0]) == 1
 
+    async def claim_update(self, update_id: int) -> bool:
+        """Atomically claim a Telegram update ID before any handler side effect."""
+        if update_id < 0:
+            raise ValueError("Telegram update_id must be non-negative")
+        cursor = await self._db().execute(
+            "INSERT OR IGNORE INTO processed_updates(update_id, processed_at) VALUES(?, ?)",
+            (update_id, utc_now().isoformat()),
+        )
+        claimed = cursor.rowcount == 1
+        await cursor.close()
+        await self._db().commit()
+        return claimed
+
+    async def cleanup_processed_updates(self, retention_days: int = 30) -> int:
+        """Bound the deduplication table while retaining IDs beyond Telegram retry windows."""
+        cutoff = (utc_now() - timedelta(days=max(1, retention_days))).isoformat()
+        cursor = await self._db().execute(
+            "DELETE FROM processed_updates WHERE processed_at < ?", (cutoff,),
+        )
+        deleted = max(0, cursor.rowcount)
+        await cursor.close()
+        await self._db().commit()
+        return deleted
+
     async def backup_to(self, destination: Path) -> None:
         """Create a consistent, atomic SQLite backup suitable for encrypted-KB restore."""
         destination = Path(destination)
@@ -177,6 +201,12 @@ class Database:
                 version INTEGER PRIMARY KEY,
                 applied_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS processed_updates (
+                update_id INTEGER PRIMARY KEY,
+                processed_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_processed_updates_time
+                ON processed_updates(processed_at);
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id INTEGER NOT NULL,

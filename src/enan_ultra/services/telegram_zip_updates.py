@@ -44,6 +44,8 @@ _SOURCE_SUFFIXES = frozenset({".py", ".json", ".html", ".css", ".js"})
 _TEST_SUFFIXES = frozenset({".py", ".json", ".txt", ".md", ".html", ".css", ".js"})
 _SUPPORTED_COMPRESSION = frozenset({zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED})
 _CHUNK_SIZE = 64 * 1024
+_DEFAULT_EXTRACT_TIMEOUT_SECONDS = 60
+_MAX_EXTRACT_TIMEOUT_SECONDS = 300
 _MANIFEST_NAME = "manifest.json"
 UPDATE_CALLBACK_HASH_PREFIX_LENGTH = 32
 _DEPLOYMENT_PROTECTED_PATHS = frozenset({
@@ -61,6 +63,11 @@ _SECRET_ASSIGNMENT = re.compile(
 _TELEGRAM_TOKEN = re.compile(r"\b\d{5,}:[A-Za-z0-9_-]{20,}\b")
 _OPENROUTER_KEY = re.compile(r"\bsk-or-v1-[A-Za-z0-9]{20,}\b")
 _GENERIC_API_KEY = re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b")
+
+
+def _check_deadline(deadline: float | None) -> None:
+    if deadline is not None and time.monotonic() >= deadline:
+        raise TimeoutError("ZIP inspection and extraction exceeded UPDATE_EXTRACT_TIMEOUT_SECONDS.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +94,7 @@ class StagedUpdate:
     archive_name: str
     archive_size: int
     archive_sha256: str
+    source_archive_sha256: str
     archive_path: Path
     release_hash: str
     release_dir: Path
@@ -136,7 +144,9 @@ class TelegramZipUpdateManager:
         self.settings = settings
         self.project_root = project_root.resolve()
         self.staging_parent = staging_parent
-        self.admin_ids = settings.effective_admin_user_ids
+        # ZIP updates use the separately configured, single ADMIN_ID. Keep this
+        # identity independent from ADMIN_USER_IDS, which grants other bot rights.
+        self.admin_ids = frozenset({settings.admin_id})
         self.admin_chat_id = settings.admin_chat_id
         self.deployment_enabled = bool(getattr(settings, "update_deployment_enabled", False))
         self.deployment_socket_path = Path(getattr(
@@ -150,6 +160,34 @@ class TelegramZipUpdateManager:
     def cleanup_expired(self) -> None:
         with self._lock:
             self._expire_locked()
+            quarantine = self.staging_parent / "quarantine"
+            if quarantine.is_symlink() or not quarantine.is_dir():
+                return
+            cutoff = time.time() - 24 * 60 * 60
+            for path in quarantine.iterdir():
+                try:
+                    if (
+                        path.suffix.lower() in {".zip", ".json"}
+                        and path.is_file() and not path.is_symlink()
+                        and path.stat().st_mtime < cutoff
+                    ):
+                        path.unlink()
+                except OSError:
+                    continue
+
+    def quarantine_directory(self) -> Path:
+        """Return the private holding directory for unscanned or invalid admin uploads."""
+        with self._lock:
+            self._create_staging_parent()
+            quarantine = self.staging_parent / "quarantine"
+            if quarantine.exists() and (quarantine.is_symlink() or not quarantine.is_dir()):
+                raise RuntimeError("The update quarantine path is not a private directory.")
+            quarantine.mkdir(mode=0o700, exist_ok=True)
+            if quarantine.is_symlink() or not quarantine.is_dir():
+                raise RuntimeError("The update quarantine path is not a private directory.")
+            if os.name != "nt":
+                quarantine.chmod(0o700)
+            return quarantine
 
     def start_upload(self, user_id: int, chat_id: int) -> UploadSession:
         with self._lock:
@@ -220,7 +258,11 @@ class TelegramZipUpdateManager:
             return
         try:
             archive_data = self._read_staged_archive(update)
-            report = await sandbox.run_python_tests(archive_data)
+            update_test_runner = getattr(sandbox, "run_update_tests", None)
+            if callable(update_test_runner):
+                report = await update_test_runner(archive_data)
+            else:
+                report = await sandbox.run_python_tests(archive_data)
         except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
             update.test_status = "BLOCKED"
             update.test_summary = (
@@ -366,7 +408,9 @@ class TelegramZipUpdateManager:
             update = self.updates.get(update_id)
             if not update or update.deployment_state != "submitting":
                 raise ValueError("This production deployment request is missing or already handled.")
-            update.deployment_state = "deploying" if accepted else "failed"
+            update.deployment_state = (
+                "awaiting_operator_authorization" if accepted else "failed"
+            )
             update.deployment_result = redact_secrets(result)[:300]
             if not accepted:
                 update.state = "deployment_failed"
@@ -376,7 +420,8 @@ class TelegramZipUpdateManager:
         lines = [
             f"Update ID: {update.update_id}",
             f"Archive: {update.archive_name} ({update.archive_size} bytes)",
-            f"Archive SHA-256: {update.archive_sha256}",
+            f"Uploaded ZIP SHA-256: {update.source_archive_sha256}",
+            f"Merged candidate ZIP SHA-256: {update.archive_sha256}",
             f"Release manifest SHA-256: {update.release_hash}",
             f"Workflow decision: {update.state.upper()}",
             f"Syntax check: {update.syntax_status} — {update.syntax_summary}",
@@ -403,7 +448,14 @@ class TelegramZipUpdateManager:
             raise ValueError("The uploaded document must have a .zip filename.")
         if not archive_data or len(archive_data) > self.settings.max_upload_bytes:
             raise ValueError("The compressed ZIP is empty or exceeds MAX_UPLOAD_BYTES.")
-        entries = self._inspect_archive(archive_data)
+        timeout = int(getattr(
+            self.settings, "update_extract_timeout_seconds", _DEFAULT_EXTRACT_TIMEOUT_SECONDS,
+        ))
+        if not 1 <= timeout <= _MAX_EXTRACT_TIMEOUT_SECONDS:
+            raise ValueError("UPDATE_EXTRACT_TIMEOUT_SECONDS must be between 1 and 300.")
+        deadline = time.monotonic() + timeout
+        entries = self._inspect_archive(archive_data, deadline)
+        _check_deadline(deadline)
         files = [entry for entry in entries if not entry.is_directory]
         names = {entry.path.casefold() for entry in files}
         if "src/enan_ultra/__init__.py" not in names or "src/enan_ultra/runtime.py" not in names:
@@ -424,10 +476,17 @@ class TelegramZipUpdateManager:
             archive_path = update_root / "upload.zip"
             archive_path.write_bytes(archive_data)
             archive_path.chmod(0o600)
-            self._extract_validated(entries, release_dir, archive_data)
+            _check_deadline(deadline)
+            self._extract_validated(entries, release_dir, archive_data, deadline)
+            _check_deadline(deadline)
+            base_hashes = self._current_hashes()
+            self._merge_current_files(release_dir, base_hashes, deadline)
+            if self._current_hashes() != base_hashes:
+                raise RuntimeError("The live project changed while the ZIP release was staged.")
             staged = self._build_manifest(
                 update_id, user_id, chat_id, archive_name, archive_data, update_root,
-                release_dir, archive_path, entries,
+                release_dir, archive_path, base_hashes,
+                hashlib.sha256(archive_data).hexdigest(), deadline,
             )
             self._check_python_syntax(staged)
             payload = self._manifest_payload(staged)
@@ -441,9 +500,12 @@ class TelegramZipUpdateManager:
                 shutil.rmtree(update_root)
             raise
 
-    def _inspect_archive(self, archive_data: bytes) -> list[_ArchiveEntry]:
+    def _inspect_archive(
+        self, archive_data: bytes, deadline: float | None = None,
+    ) -> list[_ArchiveEntry]:
         from io import BytesIO
 
+        _check_deadline(deadline)
         try:
             archive = zipfile.ZipFile(BytesIO(archive_data))
         except (OSError, zipfile.BadZipFile) as exc:
@@ -458,6 +520,7 @@ class TelegramZipUpdateManager:
             expanded_size = 0
             validated_members: list[tuple[zipfile.ZipInfo, str, bool]] = []
             for info in members:
+                _check_deadline(deadline)
                 path, is_directory = self._validate_member(info)
                 key = path.casefold()
                 previous = seen.get(key)
@@ -493,11 +556,14 @@ class TelegramZipUpdateManager:
             self._validate_path_collisions(seen)
             verified: list[_ArchiveEntry] = []
             for info, path, is_directory in validated_members:
+                _check_deadline(deadline)
                 digest = hashlib.sha256()
                 total = 0
                 try:
                     with archive.open(info) as source:
-                        total = self._hash_stream(source, digest, info.file_size)
+                        total = self._hash_stream(
+                            source, digest, info.file_size, deadline,
+                        )
                 except (
                     OSError, RuntimeError, EOFError, zlib.error,
                     zipfile.BadZipFile, NotImplementedError,
@@ -508,6 +574,7 @@ class TelegramZipUpdateManager:
                 verified.append(_ArchiveEntry(
                     info, path, is_directory, digest.hexdigest(),
                 ))
+            _check_deadline(deadline)
             return verified
 
     def _validate_member(self, info: zipfile.ZipInfo) -> tuple[str, bool]:
@@ -598,9 +665,14 @@ class TelegramZipUpdateManager:
                     raise ValueError(f"A ZIP file is also used as a parent directory: {prefix}")
 
     @staticmethod
-    def _hash_stream(source: BinaryIO, digest: _HashSink, expected_size: int) -> int:
+    def _hash_stream(
+        source: BinaryIO, digest: _HashSink, expected_size: int,
+        deadline: float | None = None,
+    ) -> int:
         total = 0
+        _check_deadline(deadline)
         while chunk := source.read(_CHUNK_SIZE):
+            _check_deadline(deadline)
             total += len(chunk)
             if total > expected_size:
                 raise ValueError("ZIP entry expands beyond its declared size.")
@@ -610,16 +682,20 @@ class TelegramZipUpdateManager:
     @staticmethod
     def _extract_validated(
         entries: list[_ArchiveEntry], release_dir: Path, archive_data: bytes,
+        deadline: float | None = None,
     ) -> None:
         from io import BytesIO
 
+        _check_deadline(deadline)
         root = release_dir.resolve()
         for entry in entries:
+            _check_deadline(deadline)
             target = release_dir.joinpath(*PurePosixPath(entry.path).parts).resolve()
             if target != root and root not in target.parents:
                 raise ValueError(f"ZIP entry resolves outside the staging root: {entry.path}")
         with zipfile.ZipFile(BytesIO(archive_data)) as archive:
             for entry in entries:
+                _check_deadline(deadline)
                 target = release_dir.joinpath(*PurePosixPath(entry.path).parts)
                 if entry.is_directory:
                     target.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -630,6 +706,7 @@ class TelegramZipUpdateManager:
                 try:
                     with archive.open(entry.info) as source, target.open("xb") as output:
                         while chunk := source.read(_CHUNK_SIZE):
+                            _check_deadline(deadline)
                             total += len(chunk)
                             if total > entry.info.file_size:
                                 raise ValueError("ZIP entry expanded beyond its validated size.")
@@ -641,8 +718,10 @@ class TelegramZipUpdateManager:
                     raise ValueError(f"ZIP entry size changed during staging: {entry.path}")
                 if digest.hexdigest() != entry.sha256:
                     raise ValueError(f"ZIP entry content changed during staging: {entry.path}")
+                _check_deadline(deadline)
                 if os.name != "nt":
                     target.chmod(0o600)
+        _check_deadline(deadline)
 
     def _build_manifest(
         self,
@@ -654,20 +733,43 @@ class TelegramZipUpdateManager:
         update_root: Path,
         release_dir: Path,
         archive_path: Path,
-        entries: list[_ArchiveEntry],
+        previous: dict[str, str],
+        source_archive_sha256: str,
+        deadline: float,
     ) -> StagedUpdate:
-        incoming = {
-            entry.path: entry for entry in entries if not entry.is_directory
-        }
-        previous = self._current_hashes()
         files: list[UpdateFile] = []
-        for path, entry in incoming.items():
+        expanded_size = 0
+        candidate_entries: dict[str, tuple[str, str]] = {}
+        for staged_path in sorted(release_dir.rglob("*")):
+            _check_deadline(deadline)
+            if staged_path.is_symlink():
+                raise ValueError("The merged release contains a symbolic link.")
+            if staged_path.is_dir():
+                continue
+            if not staged_path.is_file():
+                raise ValueError("The merged release contains a special file.")
+            path = staged_path.relative_to(release_dir).as_posix()
+            self._validate_allowlist(path, False)
+            if (
+                len(path) > self.settings.update_max_path_length
+                or len(PurePosixPath(path).parts) - 1 > self.settings.update_max_depth
+            ):
+                raise ValueError("The complete candidate exceeds the configured path limits.")
+            folded_path = path.casefold()
+            if folded_path in candidate_entries:
+                raise ValueError("The complete candidate contains duplicate or case-colliding paths.")
+            candidate_entries[folded_path] = (path, "file")
+            size = staged_path.stat().st_size
+            expanded_size += size
+            if expanded_size > self.settings.max_archive_expanded_bytes:
+                raise ValueError("The complete candidate exceeds MAX_ARCHIVE_EXPANDED_BYTES.")
             old_hash = previous.get(path)
-            action = "added" if old_hash is None else "changed" if old_hash != entry.sha256 else "unchanged"
-            files.append(UpdateFile(path, action, entry.info.file_size, entry.sha256, old_hash))
-        for path, old_hash in previous.items():
-            if path not in incoming:
-                files.append(UpdateFile(path, "removed", 0, old_hash, old_hash))
+            digest = self._file_hash(staged_path)
+            action = "added" if old_hash is None else "changed" if old_hash != digest else "unchanged"
+            files.append(UpdateFile(path, action, size, digest, old_hash))
+        self._validate_path_collisions(candidate_entries)
+        if len(files) > self.settings.update_max_files:
+            raise ValueError("The complete candidate exceeds UPDATE_MAX_FILES.")
         files.sort(key=lambda item: (item.action, item.path.casefold(), item.path))
         changes = tuple(
             item.path for item in files
@@ -681,13 +783,15 @@ class TelegramZipUpdateManager:
             "A passing sandbox run does not validate the live systemd service or database migrations.",
             "The production broker never deploys its own approval policy or runtime control files.",
         )
+        self._write_candidate_archive(release_dir, archive_path, files, deadline)
         return StagedUpdate(
             update_id=update_id,
             uploader_id=user_id,
             chat_id=chat_id,
             archive_name=archive_name.rsplit("/", 1)[-1].rsplit("\\", 1)[-1][:180],
             archive_size=len(archive_data),
-            archive_sha256=hashlib.sha256(archive_data).hexdigest(),
+            archive_sha256=self._file_hash(archive_path),
+            source_archive_sha256=source_archive_sha256,
             archive_path=archive_path,
             release_hash="",
             release_dir=release_dir,
@@ -698,6 +802,70 @@ class TelegramZipUpdateManager:
             syntax_status="NOT RUN",
             syntax_summary="Python syntax check has not run.",
         )
+
+    def _merge_current_files(
+        self, release_dir: Path, previous: dict[str, str], deadline: float,
+    ) -> None:
+        """Overlay the upload onto the current tree; omitted files remain present."""
+        for relative, digest in sorted(previous.items()):
+            _check_deadline(deadline)
+            source = self.project_root.joinpath(*PurePosixPath(relative).parts)
+            target = release_dir.joinpath(*PurePosixPath(relative).parts)
+            if target.exists() or target.is_symlink():
+                if target.is_symlink() or not target.is_file():
+                    raise ValueError("An update path collides with an existing release path.")
+                continue
+            if source.is_symlink() or not source.is_file():
+                raise RuntimeError("A current project file changed while the ZIP release was staged.")
+            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            shutil.copyfile(source, target, follow_symlinks=False)
+            if self._file_hash(target) != digest:
+                raise RuntimeError("A current project file changed while the ZIP release was staged.")
+
+    def _write_candidate_archive(
+        self,
+        release_dir: Path,
+        archive_path: Path,
+        files: list[UpdateFile],
+        deadline: float,
+    ) -> None:
+        temporary = archive_path.with_name("candidate.zip.tmp")
+        temporary.unlink(missing_ok=True)
+        size_limit = 20 * 1024 * 1024
+        try:
+            temporary.touch(mode=0o600, exist_ok=False)
+            with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_STORED) as archive:
+                for item in sorted(files, key=lambda value: (value.path.casefold(), value.path)):
+                    _check_deadline(deadline)
+                    if item.action == "removed":
+                        continue
+                    path = release_dir.joinpath(*PurePosixPath(item.path).parts)
+                    info = zipfile.ZipInfo(item.path, date_time=(1980, 1, 1, 0, 0, 0))
+                    info.compress_type = zipfile.ZIP_STORED
+                    info.create_system = 3
+                    info.external_attr = (stat.S_IFREG | 0o644) << 16
+                    digest = hashlib.sha256()
+                    total = 0
+                    with path.open("rb") as source, archive.open(info, "w") as output:
+                        while chunk := source.read(_CHUNK_SIZE):
+                            _check_deadline(deadline)
+                            total += len(chunk)
+                            if total > item.size:
+                                raise ValueError("A staged candidate file changed while packaging.")
+                            digest.update(chunk)
+                            output.write(chunk)
+                    if total != item.size or digest.hexdigest() != item.sha256:
+                        raise ValueError("A staged candidate file changed while packaging.")
+                    if temporary.stat().st_size > size_limit:
+                        raise ValueError("The complete candidate exceeds the configured ZIP size limit.")
+            if temporary.stat().st_size > size_limit:
+                raise ValueError("The complete candidate exceeds the configured ZIP size limit.")
+            if os.name != "nt":
+                temporary.chmod(0o600)
+            os.replace(temporary, archive_path)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            raise
 
     def _check_python_syntax(self, update: StagedUpdate) -> None:
         errors: list[str] = []
@@ -773,6 +941,7 @@ class TelegramZipUpdateManager:
             "schema": 2,
             "update_id": update.update_id,
             "archive_sha256": update.archive_sha256,
+            "source_archive_sha256": update.source_archive_sha256,
             "validation": {
                 "syntax": update.syntax_status,
                 "tests": update.test_status,

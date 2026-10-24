@@ -8,10 +8,11 @@ Type=simple
 User=enan-ultra
 Group=enan-ultra
 SupplementaryGroups=clamav
-WorkingDirectory=/opt/enan-ultra
+WorkingDirectory=/opt/enan-ultra/current
 EnvironmentFile=/etc/telegram-ai/bot.env
 Environment=PYTHONUNBUFFERED=1
-Environment=PYTHONPATH=/opt/enan-ultra/src
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPATH=/opt/enan-ultra/current/src
 ExecStart=/opt/enan-ultra/.venv/bin/python -m enan_ultra
 Restart=always
 RestartSec=5
