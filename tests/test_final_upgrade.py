@@ -793,10 +793,18 @@ def test_personal_timezone_and_temporary_chat_preferences(tmp_path: Path) -> Non
 def test_command_help_and_menu_are_in_english() -> None:
     from unittest.mock import AsyncMock
 
+    from telegram import BotCommandScopeChat, BotCommandScopeChatMember, BotCommandScopeDefault
+
+    from enan_ultra.command_menu import ADMIN_COMMANDS
     from enan_ultra.handlers import BotHandlers
 
     async def scenario() -> None:
-        handlers = BotHandlers(SimpleNamespace(), None, None, None, None, None)
+        settings = SimpleNamespace(
+            admin_chat_id=-2000,
+            admin_id=100,
+            effective_admin_user_ids=frozenset({100, 101}),
+        )
+        handlers = BotHandlers(settings, None, None, None, None, None)
         replies: list[str] = []
 
         async def allowed(*args: object, **kwargs: object) -> bool:
@@ -814,14 +822,55 @@ def test_command_help_and_menu_are_in_english() -> None:
         set_my_commands = AsyncMock()
         app = SimpleNamespace(bot=SimpleNamespace(set_my_commands=set_my_commands))
         await handlers.register_commands(app)
-        commands = set_my_commands.await_args.args[0]
-        assert all(not any("\u0980" <= char <= "\u09ff" for char in command.description) for command in commands)
-        assert {command.command for command in commands} >= {
-            "help", "clear", "reset", "document", "knowledge", "research", "snooze",
-        }
+        calls = set_my_commands.await_args_list
+        default_call = next(call for call in calls if isinstance(call.kwargs["scope"], BotCommandScopeDefault))
+        public_names = {command.command for command in default_call.args[0]}
+        admin_only_names = {command.command for command in ADMIN_COMMANDS}
+        assert all(
+            not any("\u0980" <= char <= "\u09ff" for char in command.description)
+            for command in default_call.args[0]
+        )
+        assert not public_names & admin_only_names
+        assert {"help", "clear", "document", "knowledge", "research", "snooze", "usage"} <= public_names
+        assert len(default_call.args[0]) <= 100
+
+        group_public_call = next(
+            call for call in calls
+            if isinstance(call.kwargs["scope"], BotCommandScopeChat)
+            and call.kwargs["scope"].chat_id == -2000
+        )
+        assert {command.command for command in group_public_call.args[0]} == public_names
+
+        admin_calls = [
+            call for call in calls
+            if isinstance(call.kwargs["scope"], (BotCommandScopeChat, BotCommandScopeChatMember))
+            and not (
+                isinstance(call.kwargs["scope"], BotCommandScopeChat)
+                and call.kwargs["scope"].chat_id == -2000
+            )
+        ]
+        assert len(admin_calls) == 4
+        for call in admin_calls:
+            scope = call.kwargs["scope"]
+            names = {command.command for command in call.args[0]}
+            assert public_names <= names
+            assert admin_only_names - {"update"} <= names
+            if isinstance(scope, BotCommandScopeChatMember):
+                assert scope.chat_id == -2000
+                assert ("update" in names) is (scope.user_id == 100)
+            else:
+                assert scope.chat_id in {100, 101}
+                assert "update" not in names
+        assert all(
+            not (
+                isinstance(call.kwargs["scope"], BotCommandScopeChat)
+                and call.kwargs["scope"].chat_id == -2000
+                and "update" in {command.command for command in call.args[0]}
+            )
+            for call in calls
+        )
 
     asyncio.run(scenario())
-
 
 def test_clear_user_conversation_only_removes_private_history_and_memory(tmp_path: Path) -> None:
     async def scenario() -> None:
@@ -1042,7 +1091,7 @@ def test_provider_fallback_and_local_only_never_call_cloud() -> None:
         router = object.__new__(ProviderRouter)
         router.settings = SimpleNamespace(
             provider_order=("openrouter", "groq", "gemini", "cloudflare", "huggingface"),
-            fallback_models=(),
+            fallback_models=(), default_model="auto",
         )
         router.openrouter = None
         cloud = _FakeAdapter("openrouter", "cloud-model", fail=True)
@@ -1065,6 +1114,61 @@ def test_provider_fallback_and_local_only_never_call_cloud() -> None:
         assert result.model == "ollama::local-model"
         assert cloud.calls == groq.calls == gemini.calls == cloudflare.calls == huggingface.calls == 0
         assert local.calls == 1
+
+        local.calls = 0
+        result = await router.complete([], primary_model=None, local_only=False)
+        assert result.model == "ollama::local-model"
+        assert local.calls == 1
+        assert cloud.calls == groq.calls == gemini.calls == cloudflare.calls == huggingface.calls == 0
+
+        local.calls = 0
+        local.fail = True
+        groq.fail = False
+        router._circuits.clear()
+        result = await router.complete([], primary_model=None, local_only=False)
+        assert result.model == "groq::groq-model"
+        assert local.calls == 1
+        assert cloud.calls == groq.calls == 1
+        assert gemini.calls == cloudflare.calls == huggingface.calls == 0
+        local.fail = False
+        groq.fail = True
+
+        router.adapters.pop("ollama")
+        assert router.default_model() == "openrouter::cloud-model"
+
+    asyncio.run(scenario())
+
+
+def test_provider_timeout_and_rate_limit_fall_back_to_secondary_provider() -> None:
+    class _FailingAdapter(_FakeAdapter):
+        def __init__(self, name: str, model: str, error: Exception) -> None:
+            super().__init__(name, model)
+            self.error = error
+
+        async def complete(self, model, messages, *, tools, max_tokens, on_token=None):
+            self.calls += 1
+            raise self.error
+
+    async def verify_fallback(error: Exception) -> None:
+        router = object.__new__(ProviderRouter)
+        router.settings = SimpleNamespace(
+            provider_order=("openrouter", "groq"),
+            fallback_models=(), default_model="openrouter::primary-model",
+            ai_max_total_attempts=2, ai_request_timeout=1,
+        )
+        router.openrouter = None
+        primary = _FailingAdapter("openrouter", "primary-model", error)
+        secondary = _FakeAdapter("groq", "secondary-model")
+        router.adapters = {"openrouter": primary, "groq": secondary}
+
+        result = await router.complete([], primary_model=None, local_only=False)
+
+        assert result.model == "groq::secondary-model"
+        assert primary.calls == secondary.calls == 1
+
+    async def scenario() -> None:
+        await verify_fallback(TimeoutError("simulated provider timeout"))
+        await verify_fallback(ProviderError("simulated rate limit", 429, retry_after=5))
 
     asyncio.run(scenario())
 

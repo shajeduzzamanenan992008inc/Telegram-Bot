@@ -9,5 +9,6 @@ Use `/privacy` to review the active data flow. In cloud mode, text, transcribed 
 - Optional ClamAV checks run before upload parsing/provider forwarding. Enabled scanner failure is fail-closed.
 - Remote provider file uploads are subject to configured privacy/fallback behavior and are queued for provider-side cleanup if immediate deletion fails.
 - `/privacy export` exports user-linked data; `/privacy delete confirm` deletes user-linked data. Shared group history is not erased as part of an individual account deletion.
+- `/style profile on` is required before local style extraction. The saved profile contains finite preference values only, expires 90 days after its last update, and can be removed with `/style profile delete`; this does not delete normal conversation history.
 
 Provider request retention is also governed by the selected provider's policy and is outside the bot's SQLite retention controls. Keep API keys and `APP_DATA_KEY` private; losing the latter makes encrypted KB data/backups unavailable. See [deployment](./DEPLOYMENT_AZURE_VM.md), [configuration](./CONFIGURATION.md), and the [README](../README.md#privacy-security-backups).

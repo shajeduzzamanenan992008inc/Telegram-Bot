@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from enan_ultra.services.theme_engine import AdaptiveThemeEngine, ThemeRegistry, TopicDetector
@@ -125,3 +126,131 @@ def test_theme_registry_can_load_a_custom_topic_without_code_changes(tmp_path: P
     detection = TopicDetector(registry).detect("Our robotics club is testing a servo motor")
     assert detection.topic_id == "robotics_club"
     assert registry.client_themes()[0]["animation"] == "aurora"
+
+
+def test_topic_tracking_off_clears_metadata_stops_updates_and_survives_restart(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        path = tmp_path / "theme-tracking.sqlite3"
+        db = Database(path)
+        await db.open()
+        try:
+            engine = AdaptiveThemeEngine()
+            detected = await engine.resolve(db, 601, "I am programming Python and debugging code")
+            assert detected.theme_id == "programming"
+            assert await db.get_preference(601, "theme_last_topic", "") == "programming"
+
+            await engine.set_tracking(db, 601, False)
+            assert await db.get_preference(601, "theme_tracking", "on") == "off"
+            for key in (
+                "theme_last_topic", "theme_last_confidence", "theme_reason_code",
+                "theme_candidate_id", "theme_candidate_count", "theme_last_updated_at",
+                "theme_current_id",
+            ):
+                assert await db.get_preference(601, key, "") == ""
+
+            paused = await engine.resolve(
+                db, 601, "Let's discuss quantum physics and particles",
+                [{"role": "user", "content": "I like astronomy and galaxies"}],
+            )
+            assert paused.theme_id == "general"
+            assert paused.reason_code == "topic_tracking_paused"
+            assert await db.get_preference(601, "theme_last_topic", "") == ""
+        finally:
+            await db.close()
+
+        reopened = Database(path)
+        await reopened.open()
+        try:
+            current = await AdaptiveThemeEngine().resolve(
+                reopened, 601, "Explain chemistry molecules",
+            )
+            assert current.theme_id == "general"
+            assert current.reason_code == "topic_tracking_paused"
+            assert await reopened.get_preference(601, "theme_last_topic", "") == ""
+            await AdaptiveThemeEngine().set_tracking(reopened, 601, True)
+            resumed = await AdaptiveThemeEngine().resolve(
+                reopened, 601, "I am programming Python and debugging code",
+            )
+            assert resumed.theme_id == "programming"
+        finally:
+            await reopened.close()
+
+    asyncio.run(scenario())
+
+
+def test_favorite_learning_off_disables_saved_fallback_without_deleting_it(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        db = Database(tmp_path / "theme-learning.sqlite3")
+        await db.open()
+        try:
+            engine = AdaptiveThemeEngine()
+            assert await engine.favorite(db, 602, "biology") is True
+            assert await db.get_preference(602, "theme_preferred_id", "") == "biology"
+            await engine.update_setting(db, 602, "theme_learning", "off")
+            assert await engine.favorite(db, 602, "chemistry") is False
+            decision = await engine.resolve(db, 602, "Hello there")
+            assert decision.theme_id == "general"
+            assert await db.get_preference(602, "theme_tracking", "on") == "on"
+            assert await db.get_preference(602, "theme_last_updated_at", "")
+            assert await db.get_preference(602, "theme_preferred_id", "") == "biology"
+        finally:
+            await db.close()
+
+    asyncio.run(scenario())
+
+
+def test_group_and_temporary_resolutions_do_not_persist_topic_metadata(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        db = Database(tmp_path / "theme-non-persistent.sqlite3")
+        await db.open()
+        try:
+            engine = AdaptiveThemeEngine()
+            group_result = await engine.resolve(
+                db, 603, "I am programming Python and debugging code", persist=False,
+            )
+            temporary_result = await engine.resolve(
+                db, 604, "I am programming Python and debugging code", persist=False,
+            )
+            assert group_result.theme_id == temporary_result.theme_id == "programming"
+            for user_id in (603, 604):
+                for key in (
+                    "theme_last_topic", "theme_last_confidence", "theme_reason_code",
+                    "theme_candidate_id", "theme_candidate_count", "theme_last_updated_at",
+                    "theme_current_id",
+                ):
+                    assert await db.get_preference(user_id, key, "") == ""
+        finally:
+            await db.close()
+
+    asyncio.run(scenario())
+
+
+def test_topic_metadata_expires_after_90_days_and_keeps_manual_preferences(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        db = Database(tmp_path / "theme-retention.sqlite3")
+        await db.open()
+        try:
+            engine = AdaptiveThemeEngine()
+            start = datetime.now(UTC)
+            await engine.resolve(db, 605, "I am programming Python and debugging code")
+            await engine.set_mode(db, 605, "manual", "chemistry")
+            await db.close()
+            db = Database(tmp_path / "theme-retention.sqlite3")
+            await db.open()
+            removed = await engine.cleanup_expired(
+                db, now=start + timedelta(days=90, seconds=1),
+            )
+            assert removed == 1
+            assert await db.get_preference(605, "theme_last_topic", "") == ""
+            assert await db.get_preference(605, "theme_last_updated_at", "") == ""
+            current = await engine.current(db, 605)
+            assert current.mode == "manual"
+            assert current.theme_id == "chemistry"
+
+            await db.set_preference(606, "theme_last_topic", "astronomy")
+            assert await engine.cleanup_expired(db, now=start) == 1
+            assert await db.get_preference(606, "theme_last_topic", "") == ""
+        finally:
+            await db.close()
+
+    asyncio.run(scenario())
