@@ -211,6 +211,7 @@ class Settings:
     update_max_compression_ratio: int
     update_extract_timeout_seconds: int
     update_test_timeout_seconds: int
+    update_upload_window_seconds: int
     update_deployment_enabled: bool
     update_deployment_socket_path: Path
     max_document_pages: int
@@ -491,6 +492,7 @@ class Settings:
             update_max_compression_ratio=_int("UPDATE_MAX_COMPRESSION_RATIO", 100, 1, 1000),
             update_extract_timeout_seconds=_int("UPDATE_EXTRACT_TIMEOUT_SECONDS", 60, 1, 300),
             update_test_timeout_seconds=_int("UPDATE_TEST_TIMEOUT_SECONDS", 180, 5, 300),
+            update_upload_window_seconds=_int("UPDATE_UPLOAD_WINDOW_SECONDS", 300, 30, 900),
             update_deployment_enabled=_bool("UPDATE_DEPLOYMENT_ENABLED", False),
             update_deployment_socket_path=Path(
                 _value("UPDATE_DEPLOYMENT_SOCKET_PATH", "/run/telegram-ai-deploy.sock"),

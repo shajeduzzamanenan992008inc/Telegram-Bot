@@ -8,20 +8,19 @@ import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 import httpx
+import pytest
 
-from enan_ultra.crypto import DataCipher
 from enan_ultra.config import Settings
+from enan_ultra.crypto import DataCipher
 from enan_ultra.dashboard import AdminDashboard
+from enan_ultra.files.registry import AudioAdapter, ImageAdapter
 from enan_ultra.models import AssistantResult
 from enan_ultra.services.code_sandbox import extract_project_zip
-from enan_ultra.files.registry import AudioAdapter, ImageAdapter
+from enan_ultra.services.key_rotation import KeyRotation
 from enan_ultra.services.openrouter import ProviderError
 from enan_ultra.services.providers import OpenAICompatibleAdapter, ProviderRouter
-from enan_ultra.services.key_rotation import KeyRotation
 from enan_ultra.storage.database import Database
-
 
 KEY = "test-only-app-data-key-with-sufficient-entropy-123456789"
 
@@ -147,7 +146,7 @@ def test_tool_action_claim_is_one_shot_per_message(tmp_path: Path) -> None:
             )
             assert tuple(rows[0]) == ("complete", "poll sent")
             versions = await db._db().execute_fetchall("SELECT version FROM schema_version ORDER BY version")
-            assert [row[0] for row in versions][-1] == 14
+            assert [row[0] for row in versions][-1] == 16
         finally:
             await db.close()
 
@@ -280,6 +279,7 @@ def test_recurring_reminders_and_user_data_export_delete(tmp_path: Path) -> None
                 "SELECT COUNT(*) FROM audit_events WHERE actor_id=?", (user_id,),
             )
             assert audit_rows[0][0] == 0
+            assert (await db.verify_audit_chain())["valid"] is True
         finally:
             await db.close()
 
@@ -289,11 +289,71 @@ def test_recurring_reminders_and_user_data_export_delete(tmp_path: Path) -> None
             versions = await reopened._db().execute_fetchall(
                 "SELECT version FROM schema_version ORDER BY version",
             )
-            assert [row[0] for row in versions][-1] == 14
+            assert [row[0] for row in versions][-1] == 16
             columns = await reopened._db().execute_fetchall("PRAGMA table_info(reminders)")
             assert "repeat_seconds" in {row["name"] for row in columns}
         finally:
             await reopened.close()
+
+    asyncio.run(scenario())
+
+
+def test_audit_chain_detects_event_tampering(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        db = Database(tmp_path / "audit.sqlite3", data_key=KEY)
+        await db.open()
+        try:
+            await db.audit(123, "test.first", "target", "ok")
+            await db.audit(456, "test.second", "other", "ok")
+            assert await db.verify_audit_chain() == {
+                "valid": True, "checked": 2, "first_invalid_id": 0,
+            }
+
+            await db._db().execute(
+                "UPDATE audit_events SET outcome='changed' WHERE id=1",
+            )
+            await db._db().commit()
+            verification = await db.verify_audit_chain()
+            assert verification["valid"] is False
+            assert verification["first_invalid_id"] == 1
+        finally:
+            await db.close()
+
+    asyncio.run(scenario())
+
+
+def test_audit_chain_migration_backfills_existing_events(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-audit.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE schema_version(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+            INSERT INTO schema_version(version, applied_at)
+            VALUES(15, '2026-01-01T00:00:00+00:00');
+            CREATE TABLE audit_events(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor_id INTEGER NOT NULL DEFAULT 0,
+                action TEXT NOT NULL,
+                target TEXT NOT NULL DEFAULT '',
+                outcome TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            );
+            INSERT INTO audit_events(actor_id,action,target,outcome,created_at)
+            VALUES(7,'legacy.event','target','ok','2026-01-02T00:00:00+00:00');
+            """
+        )
+
+    async def scenario() -> None:
+        db = Database(path, data_key=KEY)
+        await db.open()
+        try:
+            assert await db.verify_audit_chain() == {
+                "valid": True, "checked": 1, "first_invalid_id": 0,
+            }
+            await db.audit(8, "new.event", "target", "ok")
+            assert (await db.verify_audit_chain())["checked"] == 2
+        finally:
+            await db.close()
 
     asyncio.run(scenario())
 
@@ -857,7 +917,7 @@ def test_command_help_and_menu_are_in_english() -> None:
             assert admin_only_names - {"update"} <= names
             if isinstance(scope, BotCommandScopeChatMember):
                 assert scope.chat_id == -2000
-                assert ("update" in names) is (scope.user_id == 100)
+                assert "update" in names
             else:
                 assert scope.chat_id in {100, 101}
                 assert "update" not in names
@@ -1365,6 +1425,7 @@ def test_settings_loads_supported_provider_and_rejects_public_dashboard(monkeypa
     assert settings.persona_profile == "GPT-6 Astra"
     assert settings.dashboard_host == "127.0.0.1"
     assert settings.gemini_keys == ("test-only-provider-key",)
+    assert settings.update_upload_window_seconds == 300
 
     monkeypatch.setenv("GEMINI_API_KEYS", "first-test-key, second-test-key")
     settings = Settings.load()
@@ -1372,6 +1433,11 @@ def test_settings_loads_supported_provider_and_rejects_public_dashboard(monkeypa
 
     monkeypatch.setenv("DASHBOARD_HOST", "0.0.0.0")
     with pytest.raises(ValueError, match="127.0.0.1"):
+        Settings.load()
+
+    monkeypatch.setenv("DASHBOARD_HOST", "127.0.0.1")
+    monkeypatch.setenv("UPDATE_UPLOAD_WINDOW_SECONDS", "29")
+    with pytest.raises(ValueError, match="UPDATE_UPLOAD_WINDOW_SECONDS"):
         Settings.load()
 
 

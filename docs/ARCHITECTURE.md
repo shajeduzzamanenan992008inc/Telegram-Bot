@@ -33,7 +33,7 @@ When `MINI_APP_URL` is configured, `runtime.py` starts `MiniAppServer` on the se
 | `services/openrouter.py` | OpenRouter API, model catalog, web tools and media endpoints |
 | `services/key_rotation.py`, `services/provider_errors.py` | Invalid-key quarantine, bounded transient retries, Retry-After parsing, sanitized provider error categories and per-request attempt budget |
 | `files/registry.py` | File-type adapters and extraction limits |
-| `actions.py` | Tool input validation, authorization, approvals and one-shot execution |
+| `actions.py` | Tool input validation, authorization, approvals, one-shot execution, and structured verified/unverified/failed outcomes |
 | `storage/database.py` | SQLite schema/migrations, chat history, usage, support map, memory and audit state |
 | `dashboard.py` | Loopback admin dashboard and private operations API |
 | `mini_app.py` | Optional loopback Telegram Mini App API, signed identity validation and streaming chat |

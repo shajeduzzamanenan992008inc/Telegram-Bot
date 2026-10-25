@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,3 +61,30 @@ class ActionResult:
     ok: bool
     message: str
     data: dict[str, Any] = field(default_factory=dict)
+    status: Literal["done", "unverified", "failed"] | None = None
+    tool_name: str = ""
+    operation_id: str = ""
+    duration_ms: int = 0
+    diagnostic: str = ""
+    verification_evidence: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.status is None:
+            object.__setattr__(self, "status", "done" if self.ok else "failed")
+        elif self.status not in {"done", "unverified", "failed"}:
+            raise ValueError("Invalid action outcome status")
+        if self.ok != (self.status != "failed"):
+            raise ValueError("Action success flag does not match its outcome status")
+        if self.duration_ms < 0:
+            raise ValueError("Action duration cannot be negative")
+
+    def to_tool_result(self) -> dict[str, Any]:
+        return {
+            "tool_name": self.tool_name,
+            "operation_id": self.operation_id,
+            "status": self.status,
+            "duration_ms": self.duration_ms,
+            "result": {"message": self.message, "data": self.data},
+            "diagnostic": self.diagnostic,
+            "verification_evidence": list(self.verification_evidence),
+        }

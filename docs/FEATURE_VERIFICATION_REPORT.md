@@ -198,3 +198,17 @@ The operator confirmed that `enan-ultra.service` (`python -m enan_ultra`) is the
 7. For the exposed Telegram MTProto API hash, verify the supported remediation with Telegram through the registered app/support channel before changing it; do not assume that reissuing it is available or that changing it invalidates existing sessions. Review/revoke compromised Telethon authorization sessions through the supported operator flow if exposure is suspected. The current package service uses the Bot API token, not the MTProto `API_HASH`.
 
 Focused deployment/ZIP local tests after this follow-up: **45 passed, 0 failed, 0 skipped**. Complete local suite after this follow-up: **176 passed, 0 failed, 0 skipped**. Ruff, Python compile, frontend syntax, source-manifest hash verification, and `git diff --check` passed. These are local/mock results, not Azure integration evidence.
+
+## Verification addendum (2026-10-25)
+
+The feature matrix and results above are historical; this addendum records the current Python 3.12.10 verification for branch `codex/admin-zip-update`, HEAD `1b38014cba8623ca479e880969ec81e28def7cd6`.
+
+| Scope | Current evidence | Status and boundary |
+|---|---|---|
+| pypdf dependency remediation | `pypdf==6.21.2` is present in project metadata, `uv.lock`, and the pinned requirements export. Export and requirements matched all 49 package versions and hashes; `uv lock --check` passed. `pip-audit 2.10.1` reported no known vulnerabilities for that exported snapshot. | PASS for the current locked snapshot only; the audit used `--no-deps` and emitted its scope warning. Re-audit after any dependency changes. |
+| PDF and Telegram message tests | Isolated Python 3.12.10 run: `tests/test_telegram_messages.py` — 13 passed in 32.10s (exit 0). | PASS for these local tests; not a live Telegram test. |
+| Static checks | Ruff `E4,E7,E9,F`, Python compileall, and `uv lock --check` exited 0. | PASS for the named local checks. |
+| Full Python 3.12 suite | 286 passed, 1 failed, exit 1. A mocked broker test timed out in its five-second completion wait while still `restarting`; isolated retry passed 1 test. | FAIL for the full-suite run; passing retry does not erase the failure or establish a stable full-suite pass. |
+| Auto Self-Evolution and Telegram `/update` | The current full-suite run exercised local tests; no Linux staging host, real service, ClamAV daemon, Telegram API, Azure target, or production broker was contacted. | NOT TESTED end to end. Treat proposal/approval/export separately from `/update` deployment; production remains NO-GO pending isolated Linux/systemd, health, backup/restore, and rollback evidence. |
+
+The `extract_project_zip` unused import was removed from [handlers.py](../src/enan_ultra/handlers.py); no feature implementation or test was changed. OpenRouter credential rotation remains **UNKNOWN** until independently confirmed by the operator. No deployment or production service action occurred.

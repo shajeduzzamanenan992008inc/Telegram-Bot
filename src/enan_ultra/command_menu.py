@@ -103,7 +103,7 @@ ADMIN_COMMANDS = (
     BotCommand("providers", "Configured provider health"),
     BotCommand("providerdiag", "Provider circuit and credential diagnostics"),
     BotCommand("admin", "Open the administrator menu"),
-    BotCommand("update", "Stage and review a ZIP code update"),
+    BotCommand("update", "Control the temporary ZIP upload window"),
     BotCommand("end", "End a user's live session"),
     BotCommand("endall", "End all live sessions"),
     BotCommand("device", "Allowlisted Home Assistant control"),
@@ -127,19 +127,20 @@ ADMIN_COMMANDS = (
     BotCommand("evolve_stage", "Verify a staged candidate in isolation"),
     BotCommand("evolve_deploy_approve", "Record separate production approval"),
     BotCommand("evolve_cancel", "Cancel an evolution proposal"),
+    BotCommand("evolve_mode", "Pause or resume proposal collection"),
     BotCommand("learning_status", "Show learning signal status"),
     BotCommand("learning_pause", "Pause improvement signal aggregation"),
     BotCommand("learning_resume", "Resume improvement signal aggregation"),
 )
 
 
-# These registered legacy aliases remain callable for compatibility, but stay
-# out of menus. Hiding them also keeps the union of public/admin commands below
-# Telegram's 100-command per-scope limit. Internal callback actions such as
-# zipupd:approve are not slash commands and are absent from every menu.
+# These registered aliases and admin commands remain callable, but stay out of
+# menus. Hiding them also keeps each Telegram command scope below its 100-command
+# limit. Internal callback actions such as zipupd:approve are not slash commands.
 INTERNAL_COMMANDS = (
     BotCommand("resetuser", "Compatibility alias for /clearuser"),
     BotCommand("end_all", "Compatibility alias for /endall"),
+    BotCommand("evolve_export", "Download a verified candidate or source archive"),
 )
 
 
@@ -168,7 +169,7 @@ def _admin_scope_entries(settings: Any) -> Iterable[tuple[Any, int, bool]]:
     for admin_id in sorted(configured_admin_ids):
         # Private admin chats always get a user-specific Chat scope.
         private_update_access = (
-            admin_id == settings.admin_id
+            (admin_id in general_admin_ids or admin_id == settings.admin_id)
             and settings.admin_chat_id == admin_id
         )
         # ADMIN_ID may be dedicated to ZIP updates without being in the
@@ -180,7 +181,7 @@ def _admin_scope_entries(settings: Any) -> Iterable[tuple[Any, int, bool]]:
             yield (
                 BotCommandScopeChatMember(settings.admin_chat_id, admin_id),
                 admin_id,
-                admin_id == settings.admin_id,
+                admin_id in general_admin_ids or admin_id == settings.admin_id,
             )
 
 

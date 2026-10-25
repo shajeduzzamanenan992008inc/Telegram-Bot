@@ -41,8 +41,10 @@ def test_command_scopes_show_public_commands_to_users_and_admin_commands_only_to
 
         assert len(default_call.args[0]) < 100
         assert not public_names & (admin_names | hidden_names)
-        assert {"update", "block", "unblock", "providerdiag", "learning_pause"} <= admin_names
-        assert {"resetuser", "end_all"} <= hidden_names
+        assert {
+            "update", "block", "unblock", "providerdiag", "learning_pause", "evolve_mode",
+        } <= admin_names
+        assert {"resetuser", "end_all", "evolve_export"} <= hidden_names
 
         group_scope_call = next(
             call for call in calls
@@ -57,11 +59,10 @@ def test_command_scopes_show_public_commands_to_users_and_admin_commands_only_to
         ]
         assert {call.kwargs["scope"].user_id for call in member_calls} == {100, 101}
         for call in member_calls:
-            scope = call.kwargs["scope"]
             names = {command.command for command in call.args[0]}
             assert public_names <= names
             assert admin_names - {"update"} <= names
-            assert ("update" in names) is (scope.user_id == 100)
+            assert "update" in names
             assert not names & hidden_names
 
         private_calls = [
@@ -124,7 +125,7 @@ def test_primary_update_admin_gets_only_update_scope_when_not_general_admin() ->
         assert "update" in primary_names
         assert not (admin_names := {command.command for command in ADMIN_COMMANDS} - {"update"}) & primary_names
         assert admin_names <= secondary_names
-        assert "update" not in secondary_names
+        assert "update" in secondary_names
 
     asyncio.run(scenario())
 
@@ -263,11 +264,11 @@ def test_manually_typed_admin_command_denies_unauthorized_user_without_side_effe
     asyncio.run(scenario())
 
 
-def test_manually_typed_update_is_denied_for_non_primary_admin() -> None:
+def test_manually_typed_update_is_available_to_configured_admin_allowlist() -> None:
     async def scenario() -> None:
         handlers = object.__new__(BotHandlers)
         handlers.settings = _settings()
-        handlers.update_manager = SimpleNamespace(start_upload=AsyncMock())
+        handlers.update_manager = SimpleNamespace(admin_ids=frozenset({100, 101}))
         reply_text = AsyncMock()
         update = SimpleNamespace(
             effective_user=SimpleNamespace(id=101),
@@ -277,7 +278,38 @@ def test_manually_typed_update_is_denied_for_non_primary_admin() -> None:
 
         await handlers.update(update, SimpleNamespace())
 
-        assert "ADMIN_ID" in reply_text.await_args.args[0]
-        handlers.update_manager.start_upload.assert_not_awaited()
+        assert "/update enable|disable|status|cancel" in reply_text.await_args.args[0]
+
+    asyncio.run(scenario())
+
+
+def test_evolution_mode_is_admin_controlled_and_persisted() -> None:
+    async def scenario() -> None:
+        handlers = object.__new__(BotHandlers)
+        handlers._gate = AsyncMock(return_value=True)
+        handlers.db = SimpleNamespace(
+            get_setting=AsyncMock(return_value=None),
+            set_setting=AsyncMock(),
+            audit=AsyncMock(),
+        )
+        reply_text = AsyncMock()
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=100),
+            effective_message=SimpleNamespace(reply_text=reply_text),
+        )
+
+        await handlers.evolve_mode(update, SimpleNamespace(args=["off"]))
+
+        handlers.db.set_setting.assert_awaited_once_with("evolution_mode", "off")
+        handlers.db.audit.assert_awaited_once_with(
+            100, "evolution.mode_off", "proposal_collection", "off",
+        )
+        assert "proposal mode বন্ধ" in reply_text.await_args.args[0]
+
+        handlers.db.get_setting.return_value = "off"
+        reply_text.reset_mock()
+        await handlers.evolve_mode(update, SimpleNamespace(args=["status"]))
+        assert "paused" in reply_text.await_args.args[0]
+        handlers.db.set_setting.assert_awaited_once()
 
     asyncio.run(scenario())

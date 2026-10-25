@@ -482,3 +482,52 @@ This section appends the local bug-fix work to the existing readiness history. N
 - No live Telegram end-to-end test or browser visual/accessibility test ran. Sticker sending and Mini App rendering remain subject to real client/API verification.
 
 **Decision: production NO-GO.** Local fixes and cross-version Windows tests do not satisfy the remaining Linux/systemd, real scanner, Telegram, state-preservation, backup/restore, and rollback gates.
+
+## Verification addendum (2026-10-25)
+
+This dated addendum records the current `codex/admin-zip-update` checkout at `1b38014cba8623ca479e880969ec81e28def7cd6`. Earlier results above are historical snapshots and have not been replaced.
+
+### Dependency and code checks
+
+- Updated `pypdf` to `6.21.2` in [pyproject.toml](../pyproject.toml), [uv.lock](../uv.lock), and the existing hash-pinned [requirements.txt](../requirements.txt). `uv lock --check --project D:\FTP\Telegram-Bot` exited 0 and resolved 55 packages. The requirements export was regenerated with its declared profile (`uv export --locked --project D:\FTP\Telegram-Bot --no-dev --group build --format requirements-txt`) and compared against `requirements.txt`: 49 package pins and hashes matched; 0 mismatches.
+- The fresh audit export command was `uv export --locked --project D:\FTP\Telegram-Bot --no-default-groups --group build --group test --no-emit-project --format requirements.txt --output-file <temporary-audit-file>` (exit 0); it contained 54 fully pinned packages. `uvx --from pip-audit==2.10.1 pip-audit --no-deps --requirement <temporary-audit-file>` (exit 0) reported **No known vulnerabilities found**. The tool warned that `--no-deps` is less preferred; the exported lock lists each resolved package explicitly. This result is evidence for that dependency snapshot, not a claim that future advisories cannot apply.
+- Removed only the unused `extract_project_zip` import from [handlers.py](../src/enan_ultra/handlers.py). Ruff `check --select E4,E7,E9,F src tests` and `python -m compileall -q src tests` both exited 0 in the isolated Python 3.12 environment.
+- Python **3.12.10** was used in a temporary environment outside the worktree. `python -m pytest tests/test_telegram_messages.py -q` passed: **13 passed in 32.10s** (exit 0).
+- `python -m pytest -p no:cacheprovider -q tests` produced **286 passed, 1 failed** in **420.33s** (exit 1). The failure was `test_broker_requires_root_one_time_authorization_after_telegram_approval`: its five-second asynchronous completion window expired while the mocked deployment remained in `restarting`. An isolated rerun with `python -m pytest tests/test_telegram_deployment.py::test_broker_requires_root_one_time_authorization_after_telegram_approval -q` passed (**1 passed in 126.23s**, exit 0). Record this as a timing-sensitive full-suite failure with a passing retry, not as a clean full-suite pass; investigate the test/async completion timing before treating the suite as stable.
+- `git diff --check` exited 0. No test or configuration changes were made; the only source changes were the targeted dependency pin/hash update and unused-import removal. The full-suite failure remains visible here rather than being suppressed.
+
+### Reproducible command record
+
+Commands below were run from the project root; `<python312>` and `<temp-env>` refer to the isolated Python 3.12.10 environment created outside the worktree. The audit export path was a temporary file under `%TEMP%`.
+
+```text
+uv sync --locked --python C:\Users\enan9\AppData\Local\Programs\Python\Python312\python.exe --project D:\FTP\Telegram-Bot --group build --group test
+  exit 0
+uv lock --check --project D:\FTP\Telegram-Bot
+  exit 0
+uv export --locked --project D:\FTP\Telegram-Bot --no-dev --group build --format requirements-txt --output-file <temporary-build-export>
+  exit 0; 49 package pins/hashes match requirements.txt
+uv export --locked --project D:\FTP\Telegram-Bot --no-default-groups --group build --group test --no-emit-project --format requirements.txt --output-file <temporary-audit-export>
+  exit 0; 54 pinned packages
+uvx --from pip-audit==2.10.1 pip-audit --no-deps --requirement <temporary-audit-export>
+  exit 0; No known vulnerabilities found
+<python312> -m pytest -p no:cacheprovider -q D:\FTP\Telegram-Bot\tests
+  exit 1; 286 passed, 1 failed
+<python312> -m pytest tests/test_telegram_messages.py -q
+  exit 0; 13 passed
+<python312> -m pytest tests/test_telegram_deployment.py::test_broker_requires_root_one_time_authorization_after_telegram_approval -q
+  exit 0; 1 passed
+<temp-env>\Scripts\ruff.exe check --select E4,E7,E9,F D:\FTP\Telegram-Bot\src D:\FTP\Telegram-Bot\tests
+  exit 0
+<python312> -m compileall -q D:\FTP\Telegram-Bot\src D:\FTP\Telegram-Bot\tests
+  exit 0
+git diff --check
+  exit 0
+```
+
+### REA, credentials, and release decision
+
+- REA tools were visible in the active tool inventory, but REA tool discovery/session inspection was cancelled by the client. No REA analysis is claimed.
+- OpenRouter credential rotation remains **UNKNOWN** pending independent operator confirmation. No secret value was read or changed.
+- Auto Self-Evolution approval/export and Telegram `/update` remain separate workflows. Their local mocked tests do not establish Linux/systemd, ClamAV, Azure, service-identity, backup/restore, health-check, or rollback readiness.
+- **Production remains NO-GO.** No production integration, deployment, service restart, or live patch was performed. Keep `UPDATE_DEPLOYMENT_ENABLED=false`; next safe gate is an approved disposable Linux/systemd staging rehearsal using secret-free credentials and disposable state, followed by backup/restore, health, interruption, and rollback checks.
