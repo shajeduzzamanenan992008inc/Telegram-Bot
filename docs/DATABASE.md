@@ -16,11 +16,12 @@ owner-only filesystem permissions on non-Windows systems, and calls
 migration CLI or documented downgrade procedure.
 
 The migration code creates tables/indexes idempotently and records schema
-milestones 1 through 14 in `schema_version`. For historical columns it inspects
+milestones 1 through 16 in `schema_version`. For historical columns it inspects
 `PRAGMA table_info` before applying `ALTER TABLE`, including reminders, tasks,
 the admin reply map, sticker metadata and evolution proposal source hash.
 `schema_version` records applied milestones; it is not an Alembic-style migration
-script ledger. Back up the database before changing application versions. Do
+script ledger. Version 16 adds a SHA-256 hash chain to audit events and backfills
+existing rows in ID order. Back up the database before changing application versions. Do
 not edit production schema manually based on this reference.
 
 The database uses parameterized SQLite queries for normal data access; code has
@@ -50,6 +51,7 @@ queries, and are not foreign-key constraints.
 | `live_sessions` | One active/inactive session row per user ID. |
 | `admin_reply_map` | Maps an admin message ID to a user chat, user ID and theme ID for reply routing. |
 | `settings` | Global key/value settings and update timestamps. |
+| `update_upload_gate` | Singleton persistent ZIP upload gate: disabled/open/processing state, administrator who opened it, expiry, and one-shot processing token/update key. Atomic SQLite transitions prevent concurrent uploads; interrupted processing is closed during startup recovery. |
 | `user_preferences` | Per-user key/value preferences, including privacy, appearance and opted-in style profile values; composite primary key `(user_id,key)`. |
 | `sticker_registry` | Shared sticker catalogue metadata, approval/category/tags and usage counters. It stores Telegram file references and catalogue data, not the submitted message text. |
 | `memories` | User-scoped long-term facts. |
@@ -64,7 +66,7 @@ queries, and are not foreign-key constraints.
 | `feedback` | User rating and normalized category only; it does not store rated message/answer text. |
 | `kb_documents` | User-owned Personal KB document metadata; filename and MIME type are stored as encrypted BLOBs by the database service. |
 | `kb_chunks` | User KB source/content encrypted as BLOBs; linked to KB document with cascade deletion. |
-| `audit_events` | Actor, action, target, outcome and timestamp. |
+| `audit_events` | Actor, action, target, outcome, timestamp, previous-row hash and event hash. `Database.verify_audit_chain()` detects changed, missing, or reordered rows relative to the stored chain. This is not an external immutable anchor: an attacker able to rewrite the database and recompute hashes can forge a new chain. User-data deletion removes that user's audit rows and re-chains the remaining rows atomically to honor deletion. |
 | `action_executions` | One-shot tool/action execution state per chat/message/action key. |
 | `blocked_users` | Moderation status/reason per user. Intentionally retained on account deletion to preserve the abuse block. |
 | `user_tasks` | User-owned task text/status/priority/deadline and timestamps. |

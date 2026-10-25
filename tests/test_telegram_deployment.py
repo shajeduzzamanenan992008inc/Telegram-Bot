@@ -19,10 +19,11 @@ from deploy.telegram_ai_deploy import (
     DeploymentPaths,
     DeploymentRequestHandler,
     ReleaseDeployer,
+    parse_auto_deploy_admin_ids,
 )
-from enan_ultra.services.telegram_zip_updates import TelegramZipUpdateManager
-from enan_ultra.services.telegram_deployment import TelegramDeploymentClient
 from enan_ultra.runtime import _deployment_health_marker_path
+from enan_ultra.services.telegram_deployment import TelegramDeploymentClient
+from enan_ultra.services.telegram_zip_updates import TelegramZipUpdateManager
 
 ADMIN_ID = 1234
 ADMIN_CHAT = 9876
@@ -160,6 +161,7 @@ def _make_deployer(
     *,
     health_fail_numbers: set[int] | None = None,
     restart_fail_numbers: set[int] | None = None,
+    auto_deploy_admin_ids: frozenset[int] = frozenset(),
 ) -> tuple[ReleaseDeployer, _Systemd, DeploymentPaths]:
     app_root = manager.project_root.parents[1]
     if os.name == "nt":
@@ -207,6 +209,7 @@ def _make_deployer(
     deployer = ReleaseDeployer(
         paths, systemd=systemd, require_root=False, health_timeout=2,
         sleep=clock.sleep, clock=clock,
+        auto_deploy_admin_ids=auto_deploy_admin_ids,
     )
     return deployer, systemd, paths
 
@@ -285,6 +288,10 @@ def test_broker_requires_root_one_time_authorization_after_telegram_approval(
         time.sleep(0.01)
         result = deployer.status(staged.update_id)
     assert result is not None and result["state"] == "succeeded", result
+    assert result["archive_hash"] == staged.archive_sha256
+    assert result["backup_id"] == f"20270115T080000Z-{staged.update_id}"
+    assert result["validation"] == {"syntax": "PASS", "tests": "PASS"}
+    assert "snapshot" not in result
     assert systemd.restart_count == 1
     cleanup_deadline = time.monotonic() + 2
     while deployer._activation_scheduled and time.monotonic() < cleanup_deadline:
@@ -301,6 +308,124 @@ def test_broker_requires_root_one_time_authorization_after_telegram_approval(
     assert '"approval_method":"root_unix_peer_and_interactive_operator"' in audit
     assert '"operator_uid":0' in audit
     assert "TOKEN=" not in audit
+
+
+def test_admin_auto_deploy_policy_is_disabled_unless_root_configured(tmp_path: Path) -> None:
+    assert parse_auto_deploy_admin_ids("") == frozenset()
+    assert parse_auto_deploy_admin_ids("1234, 5678,1234") == frozenset({1234, 5678})
+    for invalid in ("0", "-1234", "1234,,5678", "１２３４", ",".join(str(i + 1) for i in range(101))):
+        with pytest.raises(ValueError, match="TELEGRAM_AI_AUTO_DEPLOY_ADMIN_IDS"):
+            parse_auto_deploy_admin_ids(invalid)
+
+    manager, staged = _make_release(tmp_path, test_sandbox=_PassingSandbox())
+    _approve_staging(manager, staged)
+    deployer, systemd, _paths = _make_deployer(
+        tmp_path, manager, auto_deploy_admin_ids=frozenset({ADMIN_ID}),
+    )
+    response = DeploymentRequestHandler._dispatch(
+        SimpleNamespace(deployer=deployer, allowed_uid=1001),
+        {
+            "operation": "request_deploy",
+            "update_id": staged.update_id,
+            "manifest_hash": staged.release_hash,
+            "archive_hash": staged.archive_sha256,
+            "claimed_administrator_id": ADMIN_ID,
+        },
+        peer_uid=1001,
+    )
+    assert response["accepted"] is True
+    assert response["state"] == "queued"
+    assert response["authorization_method"] == "telegram_admin_allowlist_auto_deploy"
+
+    deadline = time.monotonic() + 5
+    result = deployer.status(staged.update_id)
+    while result and result["state"] not in {
+        "succeeded", "failed", "rolled_back", "rollback_failed",
+    } and time.monotonic() < deadline:
+        time.sleep(0.01)
+        result = deployer.status(staged.update_id)
+    assert result is not None and result["state"] == "succeeded", result
+    assert result["archive_hash"] == staged.archive_sha256
+    assert result["backup_id"] == f"20270115T080000Z-{staged.update_id}"
+    assert result["validation"] == {"syntax": "PASS", "tests": "PASS"}
+    audit = (deployer.paths.history_root / "audit.jsonl").read_text(encoding="utf-8")
+    assert '"approval_method":"telegram_admin_allowlist_auto_deploy"' in audit
+    assert systemd.restart_count == 1
+
+
+def test_admin_auto_deploy_policy_never_authorizes_unlisted_admin(
+    tmp_path: Path,
+) -> None:
+    manager, staged = _make_release(tmp_path, test_sandbox=_PassingSandbox())
+    _approve_staging(manager, staged)
+    deployer, systemd, _paths = _make_deployer(
+        tmp_path, manager, auto_deploy_admin_ids=frozenset({ADMIN_ID + 1}),
+    )
+    response = DeploymentRequestHandler._dispatch(
+        SimpleNamespace(deployer=deployer, allowed_uid=1001),
+        {
+            "operation": "request_deploy",
+            "update_id": staged.update_id,
+            "manifest_hash": staged.release_hash,
+            "archive_hash": staged.archive_sha256,
+            "claimed_administrator_id": ADMIN_ID,
+        },
+        peer_uid=1001,
+    )
+    assert response["accepted"] is True
+    assert response["state"] == "awaiting_operator_authorization"
+    assert deployer.status(staged.update_id)["state"] == "awaiting_operator_authorization"
+    assert systemd.restart_count == 0
+
+
+def test_admin_auto_deploy_preserves_backup_and_health_rollback(
+    tmp_path: Path,
+) -> None:
+    manager, staged = _make_release(tmp_path, test_sandbox=_PassingSandbox())
+    _approve_staging(manager, staged)
+    deployer, systemd, _paths = _make_deployer(
+        tmp_path, manager, health_fail_numbers={1},
+        auto_deploy_admin_ids=frozenset({ADMIN_ID}),
+    )
+    assert deployer.request_deployment(
+        staged.update_id, staged.release_hash, staged.archive_sha256, ADMIN_ID,
+    )
+
+    deadline = time.monotonic() + 5
+    result = deployer.status(staged.update_id)
+    while result and result["state"] not in {
+        "succeeded", "failed", "rolled_back", "rollback_failed",
+    } and time.monotonic() < deadline:
+        time.sleep(0.01)
+        result = deployer.status(staged.update_id)
+    assert result is not None and result["state"] == "rolled_back", result
+    assert result["archive_hash"] == staged.archive_sha256
+    assert result["backup_id"] == f"20270115T080000Z-{staged.update_id}"
+    assert systemd.restart_count == 2
+
+
+def test_admin_auto_deploy_rejects_a_changed_digest_before_restart(
+    tmp_path: Path,
+) -> None:
+    manager, staged = _make_release(tmp_path, test_sandbox=_PassingSandbox())
+    _approve_staging(manager, staged)
+    deployer, systemd, _paths = _make_deployer(
+        tmp_path, manager, auto_deploy_admin_ids=frozenset({ADMIN_ID}),
+    )
+    assert deployer.request_deployment(
+        staged.update_id, staged.release_hash, "0" * 64, ADMIN_ID,
+    )
+
+    deadline = time.monotonic() + 5
+    result = deployer.status(staged.update_id)
+    while result and result["state"] not in {
+        "succeeded", "failed", "rolled_back", "rollback_failed",
+    } and time.monotonic() < deadline:
+        time.sleep(0.01)
+        result = deployer.status(staged.update_id)
+    assert result is not None and result["state"] == "failed", result
+    assert result["failure_code"] == "archive_hash_mismatch"
+    assert systemd.restart_count == 0
 
 
 def test_broker_protocol_rejects_wrong_peer_legacy_admin_field_and_unknown_operation(

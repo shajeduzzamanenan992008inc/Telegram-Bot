@@ -11,10 +11,10 @@ import os
 import sqlite3
 import stat
 import tempfile
+import uuid
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
-import uuid
 
 import aiosqlite
 
@@ -38,6 +38,26 @@ def _usage_float(value: Any) -> float:
         return max(0.0, parsed) if math.isfinite(parsed) else 0.0
     except (TypeError, ValueError, OverflowError):
         return 0.0
+
+
+_AUDIT_CHAIN_GENESIS = "0" * 64
+
+
+def _audit_event_hash(
+    event_id: int,
+    actor_id: int,
+    action: str,
+    target: str,
+    outcome: str,
+    created_at: str,
+    previous_hash: str,
+) -> str:
+    payload = json.dumps(
+        [event_id, actor_id, action, target, outcome, created_at, previous_hash],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _normalize_sticker_tags(tags: list[str] | None) -> list[str]:
@@ -83,6 +103,8 @@ class Database:
         self._usage_lock = asyncio.Lock()
         self._kb_lock = asyncio.Lock()
         self._sticker_lock = asyncio.Lock()
+        self._update_upload_gate_lock = asyncio.Lock()
+        self._audit_lock = asyncio.Lock()
 
     async def open(self) -> None:
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -683,7 +705,282 @@ class Database:
             "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(14, ?)",
             (utc_now().isoformat(),),
         )
+        await db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS update_upload_gate (
+                id INTEGER PRIMARY KEY CHECK(id = 1),
+                state TEXT NOT NULL CHECK(state IN ('disabled','open','processing')),
+                opened_by INTEGER,
+                expires_at REAL,
+                processing_token TEXT,
+                claimed_update_id TEXT,
+                updated_at TEXT NOT NULL,
+                CHECK(
+                    (state = 'disabled' AND expires_at IS NULL AND processing_token IS NULL)
+                    OR (state = 'open' AND expires_at IS NOT NULL AND processing_token IS NULL)
+                    OR (state = 'processing' AND expires_at IS NOT NULL
+                        AND processing_token IS NOT NULL)
+                )
+            );
+            INSERT OR IGNORE INTO update_upload_gate(
+                id, state, opened_by, expires_at, processing_token,
+                claimed_update_id, updated_at
+            ) VALUES(1, 'disabled', NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP);
+            """
+        )
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(15, ?)",
+            (utc_now().isoformat(),),
+        )
+        cursor = await db.execute("PRAGMA table_info(audit_events)")
+        audit_columns = {str(row["name"]) for row in await cursor.fetchall()}
+        await cursor.close()
+        if "previous_hash" not in audit_columns:
+            await db.execute(
+                "ALTER TABLE audit_events ADD COLUMN previous_hash TEXT NOT NULL DEFAULT ''",
+            )
+        if "event_hash" not in audit_columns:
+            await db.execute(
+                "ALTER TABLE audit_events ADD COLUMN event_hash TEXT NOT NULL DEFAULT ''",
+            )
+        if "previous_hash" not in audit_columns or "event_hash" not in audit_columns:
+            cursor = await db.execute(
+                "SELECT id,actor_id,action,target,outcome,created_at "
+                "FROM audit_events ORDER BY id",
+            )
+            previous_hash = _AUDIT_CHAIN_GENESIS
+            for row in await cursor.fetchall():
+                event_hash = _audit_event_hash(
+                    int(row["id"]), int(row["actor_id"]), str(row["action"]),
+                    str(row["target"]), str(row["outcome"]), str(row["created_at"]),
+                    previous_hash,
+                )
+                await db.execute(
+                    "UPDATE audit_events SET previous_hash=?,event_hash=? WHERE id=?",
+                    (previous_hash, event_hash, int(row["id"])),
+                )
+                previous_hash = event_hash
+            await cursor.close()
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(16, ?)",
+            (utc_now().isoformat(),),
+        )
         await db.commit()
+
+    async def _update_upload_gate_connection(self) -> aiosqlite.Connection:
+        if self.connection is None:
+            raise RuntimeError("Database is not open")
+        connection = await aiosqlite.connect(self.path, timeout=5)
+        await connection.execute("PRAGMA busy_timeout=5000")
+        return connection
+
+    async def open_update_upload_gate(
+        self, actor_id: int, now: float, duration_seconds: int,
+    ) -> str:
+        if actor_id <= 0 or duration_seconds <= 0:
+            raise ValueError("Invalid ZIP upload gate parameters")
+        async with self._update_upload_gate_lock:
+            connection = await self._update_upload_gate_connection()
+            try:
+                await connection.execute("BEGIN IMMEDIATE")
+                cursor = await connection.execute(
+                    "SELECT state FROM update_upload_gate WHERE id=1",
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                if row is None:
+                    raise RuntimeError("ZIP upload gate state is missing")
+                state = row[0]
+                if state == "processing":
+                    await connection.commit()
+                    return "processing"
+                if state not in {"disabled", "open"}:
+                    raise RuntimeError("ZIP upload gate state is invalid")
+                await connection.execute(
+                    "UPDATE update_upload_gate SET state='open', opened_by=?, "
+                    "expires_at=?, processing_token=NULL, claimed_update_id=NULL, "
+                    "updated_at=? WHERE id=1",
+                    (actor_id, now + duration_seconds, utc_now().isoformat()),
+                )
+                await connection.commit()
+                return "open"
+            except BaseException:
+                if connection.in_transaction:
+                    await connection.rollback()
+                raise
+            finally:
+                await connection.close()
+
+    async def get_update_upload_gate(self, now: float) -> dict[str, int | float | str | None]:
+        async with self._update_upload_gate_lock:
+            connection = await self._update_upload_gate_connection()
+            try:
+                await connection.execute("BEGIN IMMEDIATE")
+                cursor = await connection.execute(
+                    "SELECT state, opened_by, expires_at FROM update_upload_gate WHERE id=1",
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                if row is None:
+                    raise RuntimeError("ZIP upload gate state is missing")
+                state, opened_by, expires_at = row
+                if state == "open" and (expires_at is None or float(expires_at) <= now):
+                    await connection.execute(
+                        "UPDATE update_upload_gate SET state='disabled', opened_by=NULL, "
+                        "expires_at=NULL, processing_token=NULL, claimed_update_id=NULL, "
+                        "updated_at=? WHERE id=1 AND state='open'",
+                        (utc_now().isoformat(),),
+                    )
+                    state, opened_by, expires_at = "disabled", None, None
+                if state not in {"disabled", "open", "processing"}:
+                    raise RuntimeError("ZIP upload gate state is invalid")
+                await connection.commit()
+                return {
+                    "state": str(state),
+                    "opened_by": int(opened_by) if opened_by is not None else None,
+                    "expires_at": float(expires_at) if expires_at is not None else None,
+                }
+            except BaseException:
+                if connection.in_transaction:
+                    await connection.rollback()
+                raise
+            finally:
+                await connection.close()
+
+    async def claim_update_upload_gate(
+        self, update_key: str, now: float,
+    ) -> tuple[str | None, str]:
+        if not update_key or len(update_key) > 160:
+            raise ValueError("Invalid Telegram update identifier")
+        token = uuid.uuid4().hex
+        async with self._update_upload_gate_lock:
+            connection = await self._update_upload_gate_connection()
+            try:
+                await connection.execute("BEGIN IMMEDIATE")
+                cursor = await connection.execute(
+                    "UPDATE update_upload_gate SET state='processing', "
+                    "processing_token=?, claimed_update_id=?, updated_at=? "
+                    "WHERE id=1 AND state='open' AND expires_at>?",
+                    (token, update_key, utc_now().isoformat(), now),
+                )
+                claimed = cursor.rowcount == 1
+                await cursor.close()
+                if claimed:
+                    await connection.commit()
+                    return token, "processing"
+                cursor = await connection.execute(
+                    "SELECT state, expires_at FROM update_upload_gate WHERE id=1",
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                if row is None:
+                    raise RuntimeError("ZIP upload gate state is missing")
+                state, expires_at = row
+                if state == "open" and (expires_at is None or float(expires_at) <= now):
+                    await connection.execute(
+                        "UPDATE update_upload_gate SET state='disabled', opened_by=NULL, "
+                        "expires_at=NULL, processing_token=NULL, claimed_update_id=NULL, "
+                        "updated_at=? WHERE id=1 AND state='open'",
+                        (utc_now().isoformat(),),
+                    )
+                    state = "disabled"
+                if state not in {"disabled", "open", "processing"}:
+                    raise RuntimeError("ZIP upload gate state is invalid")
+                await connection.commit()
+                return None, str(state)
+            except BaseException:
+                if connection.in_transaction:
+                    await connection.rollback()
+                raise
+            finally:
+                await connection.close()
+
+    async def finish_update_upload_gate(self, token: str) -> bool:
+        if not token:
+            return False
+        async with self._update_upload_gate_lock:
+            connection = await self._update_upload_gate_connection()
+            try:
+                await connection.execute("BEGIN IMMEDIATE")
+                cursor = await connection.execute(
+                    "UPDATE update_upload_gate SET state='disabled', opened_by=NULL, "
+                    "expires_at=NULL, processing_token=NULL, claimed_update_id=NULL, "
+                    "updated_at=? WHERE id=1 AND state='processing' AND processing_token=?",
+                    (utc_now().isoformat(), token),
+                )
+                finished = cursor.rowcount == 1
+                await cursor.close()
+                await connection.commit()
+                return finished
+            except BaseException:
+                if connection.in_transaction:
+                    await connection.rollback()
+                raise
+            finally:
+                await connection.close()
+
+    async def close_update_upload_gate(self, now: float) -> str:
+        async with self._update_upload_gate_lock:
+            connection = await self._update_upload_gate_connection()
+            try:
+                await connection.execute("BEGIN IMMEDIATE")
+                cursor = await connection.execute(
+                    "SELECT state, expires_at FROM update_upload_gate WHERE id=1",
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                if row is None:
+                    raise RuntimeError("ZIP upload gate state is missing")
+                state, expires_at = row
+                if state == "processing":
+                    await connection.commit()
+                    return "processing"
+                if state == "open" and expires_at is not None and float(expires_at) > now:
+                    result = "disabled"
+                elif state == "open":
+                    result = "expired"
+                elif state == "disabled":
+                    result = "disabled"
+                else:
+                    raise RuntimeError("ZIP upload gate state is invalid")
+                await connection.execute(
+                    "UPDATE update_upload_gate SET state='disabled', opened_by=NULL, "
+                    "expires_at=NULL, processing_token=NULL, claimed_update_id=NULL, "
+                    "updated_at=? WHERE id=1 AND state IN ('open','disabled')",
+                    (utc_now().isoformat(),),
+                )
+                await connection.commit()
+                return result
+            except BaseException:
+                if connection.in_transaction:
+                    await connection.rollback()
+                raise
+            finally:
+                await connection.close()
+
+    async def recover_update_upload_gate(self, now: float) -> int:
+        """Close interrupted work and expired windows without reopening upload access."""
+        async with self._update_upload_gate_lock:
+            connection = await self._update_upload_gate_connection()
+            try:
+                await connection.execute("BEGIN IMMEDIATE")
+                cursor = await connection.execute(
+                    "UPDATE update_upload_gate SET state='disabled', opened_by=NULL, "
+                    "expires_at=NULL, processing_token=NULL, claimed_update_id=NULL, "
+                    "updated_at=? WHERE id=1 AND (state='processing' OR "
+                    "(state='open' AND expires_at<=?))",
+                    (utc_now().isoformat(), now),
+                )
+                recovered = cursor.rowcount
+                await cursor.close()
+                await connection.commit()
+                return recovered
+            except BaseException:
+                if connection.in_transaction:
+                    await connection.rollback()
+                raise
+            finally:
+                await connection.close()
 
     async def save_message(self, chat_id: int, role: str, content: str, keep: int = 12) -> None:
         db = self._db()
@@ -1029,8 +1326,31 @@ class Database:
                 f"DELETE FROM action_executions WHERE chat_id={chat_id};",
                 f"DELETE FROM admin_reply_map WHERE user_chat_id={chat_id};",
             ))
-        statements.append("COMMIT;")
-        await db.executescript("\n".join(statements))
+        async with self._audit_lock:
+            try:
+                await db.executescript("\n".join(statements))
+                cursor = await db.execute(
+                    "SELECT id,actor_id,action,target,outcome,created_at "
+                    "FROM audit_events ORDER BY id",
+                )
+                rows = await cursor.fetchall()
+                await cursor.close()
+                previous_hash = _AUDIT_CHAIN_GENESIS
+                for row in rows:
+                    event_hash = _audit_event_hash(
+                        int(row["id"]), int(row["actor_id"]), str(row["action"]),
+                        str(row["target"]), str(row["outcome"]), str(row["created_at"]),
+                        previous_hash,
+                    )
+                    await db.execute(
+                        "UPDATE audit_events SET previous_hash=?,event_hash=? WHERE id=?",
+                        (previous_hash, event_hash, int(row["id"])),
+                    )
+                    previous_hash = event_hash
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
 
     async def set_user_blocked(self, user_id: int, blocked_by: int, reason: str = "") -> None:
         await self._db().execute(
@@ -2079,21 +2399,61 @@ class Database:
 
     async def record_evolution_staging_verification(
         self, proposal_id: int, patch_hash: str, approver_id: int, admin_ids: frozenset[int],
-        report: str, exit_code: int, timed_out: bool,
+        report: str, exit_code: int, timed_out: bool, candidate_archive: bytes | None = None,
     ) -> bool:
         if approver_id not in admin_ids or self.cipher is None:
             return False
         passed = exit_code == 0 and not timed_out
+        if passed and (
+            not candidate_archive or len(candidate_archive) > 20 * 1024 * 1024
+        ):
+            return False
+        if candidate_archive is not None and len(candidate_archive) > 20 * 1024 * 1024:
+            return False
         state = "awaiting_deployment_approval" if passed else "failed"
-        cursor = await self._db().execute(
-            "UPDATE evolution_proposals SET state=?,test_report=?,test_exit_code=?,test_timed_out=?,updated_at=? "
-            "WHERE id=? AND state='approved_staging' AND reviewed_hash=? AND patch_hash=? AND expires_at>?",
-            (state, self.cipher.encrypt(report[:24000]), exit_code, int(timed_out), utc_now().isoformat(),
-             proposal_id, patch_hash, patch_hash, utc_now().isoformat()),
-        )
-        changed = cursor.rowcount == 1
-        await cursor.close()
-        await self._db().commit()
+        now = utc_now().isoformat()
+        db = self._db()
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = await db.execute(
+                "SELECT payload FROM evolution_proposals WHERE id=? AND state='approved_staging' "
+                "AND reviewed_hash=? AND patch_hash=? AND expires_at>?",
+                (proposal_id, patch_hash, patch_hash, now),
+            )
+            row = await cursor.fetchone()
+            await cursor.close()
+            if row is None:
+                await db.rollback()
+                return False
+            payload = json.loads(self.cipher.decrypt_text(row["payload"]))
+            if not isinstance(payload, dict):
+                await db.rollback()
+                return False
+            if passed:
+                payload["candidate_archive"] = base64.b64encode(candidate_archive).decode("ascii")
+                payload["candidate_hash"] = hashlib.sha256(candidate_archive).hexdigest()
+            else:
+                payload.pop("candidate_archive", None)
+                payload.pop("candidate_hash", None)
+            encrypted_payload = self.cipher.encrypt(json.dumps(
+                payload, separators=(",", ":"), ensure_ascii=True,
+            ))
+            cursor = await db.execute(
+                "UPDATE evolution_proposals SET state=?,payload=?,test_report=?,test_exit_code=?,"
+                "test_timed_out=?,updated_at=? WHERE id=? AND state='approved_staging' "
+                "AND reviewed_hash=? AND patch_hash=? AND expires_at>?",
+                (state, encrypted_payload, self.cipher.encrypt(report[:24000]), exit_code,
+                 int(timed_out), now, proposal_id, patch_hash, patch_hash, now),
+            )
+            changed = cursor.rowcount == 1
+            await cursor.close()
+            if changed:
+                await db.commit()
+            else:
+                await db.rollback()
+        except Exception:
+            await db.rollback()
+            raise
         if changed:
             await self.audit(approver_id, "evolution.staging_verify", str(proposal_id), "passed" if passed else "failed")
         return changed
@@ -2198,11 +2558,66 @@ class Database:
                 for row in rows]
 
     async def audit(self, actor_id: int, action: str, target: str = "", outcome: str = "") -> None:
-        await self._db().execute(
-            "INSERT INTO audit_events(actor_id,action,target,outcome,created_at) VALUES(?,?,?,?,?)",
-            (actor_id, action[:80], target[:120], outcome[:120], utc_now().isoformat()),
-        )
-        await self._db().commit()
+        async with self._audit_lock:
+            db = self._db()
+            try:
+                await db.execute("BEGIN IMMEDIATE")
+                cursor = await db.execute(
+                    "SELECT event_hash FROM audit_events ORDER BY id DESC LIMIT 1",
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                previous_hash = str(row["event_hash"]) if row else _AUDIT_CHAIN_GENESIS
+                if len(previous_hash) != 64:
+                    raise RuntimeError("Audit chain tail is invalid")
+                created_at = utc_now().isoformat()
+                cursor = await db.execute(
+                    "INSERT INTO audit_events("
+                    "actor_id,action,target,outcome,created_at,previous_hash,event_hash"
+                    ") VALUES(?,?,?,?,?,?, '')",
+                    (actor_id, action[:80], target[:120], outcome[:120], created_at, previous_hash),
+                )
+                event_id = int(cursor.lastrowid)
+                await cursor.close()
+                event_hash = _audit_event_hash(
+                    event_id, actor_id, action[:80], target[:120], outcome[:120],
+                    created_at, previous_hash,
+                )
+                await db.execute(
+                    "UPDATE audit_events SET event_hash=? WHERE id=?",
+                    (event_hash, event_id),
+                )
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+
+    async def verify_audit_chain(self) -> dict[str, int | bool]:
+        async with self._audit_lock:
+            cursor = await self._db().execute(
+                "SELECT id,actor_id,action,target,outcome,created_at,previous_hash,event_hash "
+                "FROM audit_events ORDER BY id",
+            )
+            rows = await cursor.fetchall()
+            await cursor.close()
+            previous_hash = _AUDIT_CHAIN_GENESIS
+            for row in rows:
+                event_id = int(row["id"])
+                stored_previous = str(row["previous_hash"])
+                stored_hash = str(row["event_hash"])
+                expected_hash = _audit_event_hash(
+                    event_id, int(row["actor_id"]), str(row["action"]),
+                    str(row["target"]), str(row["outcome"]), str(row["created_at"]),
+                    previous_hash,
+                )
+                if stored_previous != previous_hash or stored_hash != expected_hash:
+                    return {
+                        "valid": False,
+                        "checked": len(rows),
+                        "first_invalid_id": event_id,
+                    }
+                previous_hash = stored_hash
+            return {"valid": True, "checked": len(rows), "first_invalid_id": 0}
 
     async def claim_action_execution(
         self, chat_id: int, message_id: int, action_key: str, action_name: str,

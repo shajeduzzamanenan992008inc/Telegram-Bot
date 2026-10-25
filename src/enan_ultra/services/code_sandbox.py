@@ -35,6 +35,7 @@ class SandboxReport:
     exit_code: int
     output: str
     timed_out: bool = False
+    candidate_archive: bytes | None = None
 
 
 def extract_project_zip(
@@ -135,6 +136,21 @@ def sanitize_project_archive(data: bytes, settings: Settings) -> bytes:
         return output.getvalue()
 
 
+def validate_complete_project_archive(data: bytes, settings: Settings) -> None:
+    """Validate an export without allowing the bounded extractor to silently omit files."""
+    with tempfile.TemporaryDirectory(prefix="enan-evolution-verify-") as temporary:
+        root = Path(temporary)
+        extracted = extract_project_zip(data, root, settings)
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            archive_files = {
+                item.filename.replace("\\", "/").rstrip("/")
+                for item in archive.infolist() if not item.is_dir()
+            }
+        extracted_files = {path.relative_to(root).as_posix() for path in extracted}
+        if archive_files != extracted_files:
+            raise ValueError("Archive contains excluded or unsupported files")
+
+
 def validate_evolution_patch(patch: bytes) -> str:
     """Validate a bounded text diff and reject paths that need enhanced manual review."""
     if not patch or len(patch) > 1_000_000:
@@ -169,10 +185,17 @@ def validate_evolution_patch(patch: bytes) -> str:
         ):
             raise ValueError("Patch contains an unsafe repository path")
         folded = normalized.casefold()
+        filename = parts[-1].casefold()
+        suffix = Path(filename).suffix.casefold()
         if (
-            parts[-1].casefold() in {".env", ".npmrc", ".pypirc", ".netrc"}
-            or parts[-1].casefold().startswith((".env.", "id_rsa", "id_ed25519"))
-            or any(part.casefold() in {"secrets", "credentials"} for part in parts)
+            filename in {".env", ".npmrc", ".pypirc", ".netrc"}
+            or filename.startswith((".env.", "id_rsa", "id_ed25519"))
+            or any(
+                part.casefold() in {"secrets", "credentials"}
+                or "secret" in part.casefold() or "credential" in part.casefold()
+                for part in parts
+            )
+            or suffix in {".pem", ".key", ".p12", ".pfx"}
             or any(folded == prefix or folded.startswith(prefix) for prefix in _PROTECTED_PATCH_PREFIXES)
         ):
             raise ValueError("Patch touches a protected security, configuration, storage, or deployment path")
@@ -226,13 +249,18 @@ class CodeSandbox:
             timeout_seconds=self.settings.update_test_timeout_seconds,
         )
 
-    async def run_python_patch_tests(self, archive_data: bytes, patch_data: bytes) -> SandboxReport:
+    async def run_python_patch_tests(
+        self, archive_data: bytes, patch_data: bytes, *, include_candidate: bool = False,
+    ) -> SandboxReport:
         patch_text = validate_evolution_patch(patch_data)
-        return await self._run_python_tests(archive_data, patch_text.encode("utf-8"))
+        return await self._run_python_tests(
+            archive_data, patch_text.encode("utf-8"), include_candidate=include_candidate,
+        )
 
     async def _run_python_tests(
         self, archive_data: bytes, patch_data: bytes | None = None, *,
         max_files: int | None = None, timeout_seconds: int | None = None,
+        include_candidate: bool = False,
     ) -> SandboxReport:
         if not self.settings.sandbox_enabled:
             raise RuntimeError("Code sandbox is disabled")
@@ -284,7 +312,8 @@ class CodeSandbox:
             if patch_path is not None:
                 test_command = (
                     "cp -a /input/. /workspace/ && git apply --check /candidate.patch && "
-                    "git apply /candidate.patch && exec python -m pytest -q --disable-warnings"
+                    "git apply /candidate.patch && python -m compileall -q /workspace && "
+                    "exec python -m pytest -q --disable-warnings"
                 )
             command = [
                 docker, "run", "--rm", "--pull=never", "--name", job_name,
@@ -343,4 +372,108 @@ class CodeSandbox:
             )
             if timed_out:
                 text += "\nSandbox time limit reached; the container was stopped."
-            return SandboxReport(process.returncode or 0, text[-24_000:], timed_out)
+            exit_code = process.returncode if process.returncode is not None else 1
+            candidate_archive = None
+            if (
+                include_candidate and patch_data is not None
+                and exit_code == 0 and not timed_out
+            ):
+                candidate_archive = await self._export_patch_candidate(
+                    docker, docker_env, root, patch_path, temporary_root,
+                )
+            return SandboxReport(exit_code, text[-24_000:], timed_out, candidate_archive)
+
+    async def _export_patch_candidate(
+        self, docker: str, docker_env: dict[str, str], source_root: Path,
+        patch_path: Path | None, temporary_root: Path,
+    ) -> bytes:
+        if patch_path is None:
+            raise ValueError("A validated patch is required to export a candidate")
+        export_root = temporary_root / "export"
+        export_root.mkdir(mode=0o700)
+        script_path = temporary_root / "archive_candidate.py"
+        script_path.write_text(
+            "import os, stat, sys, zipfile\n"
+            "root = '/workspace'\n"
+            "output = '/export/candidate.zip'\n"
+            "max_files = " + str(self.settings.sandbox_max_files) + "\n"
+            "max_bytes = " + str(self.settings.sandbox_max_expanded_bytes) + "\n"
+            "files = []\n"
+            "total = 0\n"
+            "for current, dirs, names in os.walk(root, followlinks=False):\n"
+            "    for name in list(dirs):\n"
+            "        path = os.path.join(current, name)\n"
+            "        if os.path.islink(path):\n"
+            "            raise SystemExit('candidate contains a symlink')\n"
+            "    for name in names:\n"
+            "        path = os.path.join(current, name)\n"
+            "        info = os.lstat(path)\n"
+            "        if not stat.S_ISREG(info.st_mode):\n"
+            "            raise SystemExit('candidate contains a non-regular file')\n"
+            "        relative = os.path.relpath(path, root).replace(os.sep, '/')\n"
+            "        files.append((path, relative, info.st_size))\n"
+            "        total += info.st_size\n"
+            "        if len(files) > max_files or total > max_bytes:\n"
+            "            raise SystemExit('candidate exceeds configured archive limits')\n"
+            "with zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_DEFLATED) as archive:\n"
+            "    for path, relative, _ in sorted(files, key=lambda item: item[1]):\n"
+            "        archive.write(path, relative)\n",
+            encoding="utf-8",
+        )
+        script_path.chmod(0o600)
+        job_name = f"enan-export-{uuid.uuid4().hex[:16]}"
+        command = [
+            docker, "run", "--rm", "--pull=never", "--name", job_name,
+            "--network=none", "--read-only", "--cap-drop=ALL",
+            "--security-opt=no-new-privileges", "--pids-limit=64",
+            "--memory", f"{self.settings.sandbox_memory_mb}m",
+            "--cpus", str(self.settings.sandbox_cpu_count),
+            "--user", "0:0", "--tmpfs", "/tmp:rw,noexec,nosuid,size=16m",
+            "--tmpfs", f"/workspace:rw,nosuid,nodev,size={math.ceil(self.settings.sandbox_max_expanded_bytes / (1024 * 1024)) + 64}m",
+            "--mount", f"type=bind,src={source_root},dst=/input,readonly",
+            "--mount", f"type=bind,src={patch_path},dst=/candidate.patch,readonly",
+            "--mount", f"type=bind,src={script_path},dst=/archive_candidate.py,readonly",
+            "--mount", f"type=bind,src={export_root},dst=/export",
+            "--workdir", "/workspace", self.settings.sandbox_image,
+            "sh", "-c",
+            "cp -a /input/. /workspace/ && git apply --check /candidate.patch && "
+            "git apply /candidate.patch && python /archive_candidate.py",
+        ]
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command, stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                env=docker_env,
+            )
+        except OSError as exc:
+            raise RuntimeError("Rootless Docker could not export the staged candidate") from exc
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=min(120, max(10, self.settings.sandbox_timeout_seconds)),
+            )
+        except TimeoutError as exc:
+            killer = await asyncio.create_subprocess_exec(
+                docker, "kill", job_name, stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL, env=docker_env,
+            )
+            await asyncio.wait_for(killer.wait(), timeout=5)
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5)
+            except TimeoutError:
+                process.kill()
+                await process.wait()
+            raise RuntimeError("Candidate export exceeded its time limit") from exc
+        if process.returncode != 0:
+            safe_output = redact_sandbox_output(
+                (stdout + b"\n" + stderr).decode("utf-8", "replace"),
+            )
+            raise RuntimeError(
+                "Isolated candidate export failed: " + safe_output[-1000:],
+            )
+        candidate_path = export_root / "candidate.zip"
+        if not candidate_path.is_file() or candidate_path.stat().st_size > 20 * 1024 * 1024:
+            raise RuntimeError("Isolated candidate export is missing or exceeds the archive limit")
+        candidate = candidate_path.read_bytes()
+        validate_complete_project_archive(candidate, self.settings)
+        return candidate

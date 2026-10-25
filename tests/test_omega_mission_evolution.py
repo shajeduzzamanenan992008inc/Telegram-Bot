@@ -1,18 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import io
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+from telegram.error import TelegramError
 
 from enan_ultra.crypto import DataCipher
+from enan_ultra.handlers import BotHandlers
 from enan_ultra.models import AssistantResult
 from enan_ultra.services.code_sandbox import (
-    redact_sandbox_output, sanitize_project_archive, validate_evolution_patch,
+    redact_sandbox_output, sanitize_project_archive, validate_complete_project_archive,
+    validate_evolution_patch,
 )
 from enan_ultra.services.mission_control import MissionControl
 from enan_ultra.storage.database import Database
@@ -84,6 +89,13 @@ def _project_zip() -> bytes:
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w") as archive:
         archive.writestr("test_example.py", "def test_ok():\n    assert 1 + 1 == 2\n")
+    return output.getvalue()
+
+
+def _candidate_zip() -> bytes:
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w") as archive:
+        archive.writestr("test_example.py", "def test_ok():\n    assert 2 + 2 == 4\n")
     return output.getvalue()
 
 
@@ -208,7 +220,7 @@ def test_evolution_hash_gates_admin_approval_and_separate_deploy_gate(tmp_path: 
         db = Database(tmp_path / "evolution.sqlite3", data_key=KEY)
         await db.open()
         try:
-            patch, archive = _patch(), _project_zip()
+            patch, archive, candidate = _patch(), _project_zip(), _candidate_zip()
             proposal_id = await db.create_evolution_proposal(101, "Fix a test", patch, archive)
             proposal = await db.get_evolution_proposal(proposal_id)
             assert proposal and proposal["patch_hash"] == hashlib.sha256(patch).hexdigest()
@@ -250,7 +262,20 @@ def test_evolution_hash_gates_admin_approval_and_separate_deploy_gate(tmp_path: 
             ) is False
             assert await db.record_evolution_staging_verification(
                 proposal_id, patch_hash, 10, frozenset({10}), "passed", 0, False,
+            ) is False
+            assert await db.record_evolution_staging_verification(
+                proposal_id, patch_hash, 10, frozenset({10}), "passed", 0, False,
+                b"x" * (20 * 1024 * 1024 + 1),
+            ) is False
+            assert await db.record_evolution_staging_verification(
+                proposal_id, patch_hash, 10, frozenset({10}), "passed", 0, False,
+                candidate,
             ) is True
+            staged = await db.get_evolution_proposal(proposal_id)
+            assert staged
+            assert base64.b64decode(staged["payload"]["candidate_archive"]) == candidate
+            assert staged["payload"]["candidate_hash"] == hashlib.sha256(candidate).hexdigest()
+            assert staged["payload"]["candidate_hash"] != proposal["source_hash"]
             assert await db.approve_evolution_deployment(
                 proposal_id, "f" * 64, 10, frozenset({10}),
             ) is False
@@ -296,6 +321,9 @@ def test_patch_path_policy_and_sandbox_log_redaction() -> None:
     traversal = b"--- a/../../etc/passwd\n+++ b/../../etc/passwd\n"
     with pytest.raises(ValueError, match="unsafe"):
         validate_evolution_patch(traversal)
+    secret_file = b"--- /dev/null\n+++ b/.env.production\n@@ -0,0 +1 @@\n+TOKEN=value\n"
+    with pytest.raises(ValueError, match="protected"):
+        validate_evolution_patch(secret_file)
     credential = (
         b"--- a/config.py\n+++ b/config.py\n@@ -1 +1 @@\n- api_key = ''\n+ api_key = 'private-credential-value-12345'\n"
     )
@@ -322,3 +350,359 @@ def test_evolution_source_repack_excludes_secret_files() -> None:
         assert archive.namelist() == ["src/app.py"]
         assert b"private-key" not in archive.read("src/app.py")
 
+
+def test_complete_evolution_archive_validation_rejects_silently_excluded_files() -> None:
+    settings = SimpleNamespace(
+        max_upload_bytes=1_000_000,
+        sandbox_max_files=20,
+        sandbox_max_expanded_bytes=1_000_000,
+    )
+    validate_complete_project_archive(_project_zip(), settings)
+
+    contaminated = io.BytesIO()
+    with zipfile.ZipFile(contaminated, "w") as archive:
+        archive.writestr("src/app.py", "VALUE = 1\n")
+        archive.writestr(".env", "TOKEN=secret\n")
+    with pytest.raises(ValueError, match="excluded"):
+        validate_complete_project_archive(contaminated.getvalue(), settings)
+
+
+def test_evolution_export_requires_admin_private_chat_and_exact_hash() -> None:
+    async def scenario() -> None:
+        candidate, source = _candidate_zip(), _project_zip()
+        patch_hash = hashlib.sha256(_patch()).hexdigest()
+        candidate_hash = hashlib.sha256(candidate).hexdigest()
+        proposal = {
+            "patch_hash": patch_hash,
+            "source_hash": hashlib.sha256(source).hexdigest(),
+            "state": "awaiting_deployment_approval",
+            "expires_at": "2099-01-01T00:00:00+00:00",
+            "payload": {
+                "candidate_archive": base64.b64encode(candidate).decode("ascii"),
+                "candidate_hash": candidate_hash,
+                "archive": base64.b64encode(source).decode("ascii"),
+            },
+        }
+        handlers = object.__new__(BotHandlers)
+        handlers.settings = SimpleNamespace(
+            max_upload_bytes=1_000_000,
+            sandbox_max_files=20,
+            sandbox_max_expanded_bytes=1_000_000,
+        )
+        handlers._gate = AsyncMock(return_value=True)
+        handlers.db = SimpleNamespace(
+            get_evolution_proposal=AsyncMock(return_value=proposal),
+            audit=AsyncMock(),
+        )
+        message = SimpleNamespace(
+            reply_text=AsyncMock(),
+            reply_document=AsyncMock(),
+        )
+        update = SimpleNamespace(
+            effective_message=message,
+            effective_chat=SimpleNamespace(type="private"),
+            effective_user=SimpleNamespace(id=10),
+        )
+
+        await handlers.evolve_export(
+            update, SimpleNamespace(args=["7", patch_hash, "candidate"]),
+        )
+        message.reply_document.assert_awaited_once()
+        sent = message.reply_document.await_args.args[0]
+        assert sent.filename == "evolution-7-candidate.zip"
+        assert sent.input_file_content == candidate
+        assert candidate_hash in message.reply_document.await_args.kwargs["caption"]
+        handlers.db.audit.assert_awaited_once_with(
+            10, "evolution.artifact_export", "7",
+            f"candidate:success:{candidate_hash[:16]}",
+        )
+
+        handlers.db.audit.reset_mock()
+        message.reply_document.reset_mock(side_effect=True)
+        message.reply_document.side_effect = TelegramError("delivery failed")
+        message.reply_text.reset_mock()
+        await handlers.evolve_export(
+            update, SimpleNamespace(args=["7", patch_hash, "candidate"]),
+        )
+        message.reply_document.assert_awaited_once()
+        handlers.db.audit.assert_awaited_once_with(
+            10, "evolution.artifact_export", "7", "candidate:failed:delivery",
+        )
+        assert "could not be delivered" in message.reply_text.await_args.args[0]
+        message.reply_document.side_effect = None
+
+        message.reply_text.reset_mock()
+        message.reply_document.reset_mock(side_effect=True)
+        await handlers.evolve_export(
+            update, SimpleNamespace(args=["7", "0" * 64, "candidate"]),
+        )
+        message.reply_document.assert_not_awaited()
+        assert "unavailable" in message.reply_text.await_args.args[0]
+
+        proposal["expires_at"] = "2000-01-01T00:00:00+00:00"
+        message.reply_text.reset_mock()
+        await handlers.evolve_export(
+            update, SimpleNamespace(args=["7", patch_hash, "candidate"]),
+        )
+        message.reply_document.assert_not_awaited()
+        assert "current" in message.reply_text.await_args.args[0]
+        assert handlers.db.audit.await_args.args[-1] == "candidate:blocked:proposal_unavailable"
+
+        handlers._gate = AsyncMock(return_value=False)
+        message.reply_text.reset_mock()
+        await handlers.evolve_export(
+            update, SimpleNamespace(args=["7", patch_hash, "candidate"]),
+        )
+        assert handlers.db.get_evolution_proposal.await_count == 4
+        message.reply_document.assert_not_awaited()
+
+        handlers._gate = AsyncMock(return_value=True)
+        update.effective_chat.type = "group"
+        message.reply_text.reset_mock()
+        await handlers.evolve_export(
+            update, SimpleNamespace(args=["7", patch_hash, "candidate"]),
+        )
+        assert handlers.db.get_evolution_proposal.await_count == 4
+        assert "private chat" in message.reply_text.await_args.args[0]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("candidate_kind", "expected_outcome"),
+    [
+        ("hash_mismatch", "candidate:blocked:hash_mismatch"),
+        ("unsafe_archive", "candidate:blocked:archive_validation"),
+        ("oversized_archive", "candidate:blocked:archive_validation"),
+    ],
+)
+def test_evolution_export_rejects_tampered_unsafe_and_oversized_candidates(
+    candidate_kind: str, expected_outcome: str,
+) -> None:
+    async def scenario() -> None:
+        candidate = _candidate_zip()
+        max_upload_bytes = 1_000_000
+        if candidate_kind == "hash_mismatch":
+            candidate_hash = "0" * 64
+        elif candidate_kind == "unsafe_archive":
+            unsafe = io.BytesIO()
+            with zipfile.ZipFile(unsafe, "w") as archive:
+                archive.writestr(".env", "TOKEN=secret\n")
+            candidate = unsafe.getvalue()
+            candidate_hash = hashlib.sha256(candidate).hexdigest()
+        else:
+            oversized = io.BytesIO()
+            with zipfile.ZipFile(oversized, "w", compression=zipfile.ZIP_STORED) as archive:
+                archive.writestr("large.py", b"x" * 256)
+            candidate = oversized.getvalue()
+            candidate_hash = hashlib.sha256(candidate).hexdigest()
+            max_upload_bytes = 128
+
+        patch_hash = hashlib.sha256(_patch()).hexdigest()
+        proposal = {
+            "patch_hash": patch_hash,
+            "source_hash": hashlib.sha256(_project_zip()).hexdigest(),
+            "state": "awaiting_deployment_approval",
+            "expires_at": "2099-01-01T00:00:00+00:00",
+            "payload": {
+                "candidate_archive": base64.b64encode(candidate).decode("ascii"),
+                "candidate_hash": candidate_hash,
+            },
+        }
+        handlers = object.__new__(BotHandlers)
+        handlers.settings = SimpleNamespace(
+            max_upload_bytes=max_upload_bytes,
+            sandbox_max_files=20,
+            sandbox_max_expanded_bytes=1_000_000,
+        )
+        handlers._gate = AsyncMock(return_value=True)
+        handlers.db = SimpleNamespace(
+            get_evolution_proposal=AsyncMock(return_value=proposal),
+            audit=AsyncMock(),
+        )
+        message = SimpleNamespace(
+            reply_text=AsyncMock(),
+            reply_document=AsyncMock(),
+        )
+        update = SimpleNamespace(
+            effective_message=message,
+            effective_chat=SimpleNamespace(type="private"),
+            effective_user=SimpleNamespace(id=10),
+        )
+
+        await handlers.evolve_export(
+            update, SimpleNamespace(args=["7", patch_hash, "candidate"]),
+        )
+
+        message.reply_document.assert_not_awaited()
+        assert handlers.db.audit.await_args.args[-1] == expected_outcome
+
+    asyncio.run(scenario())
+
+
+def test_evolution_export_audits_interrupted_delivery_and_propagates_cancellation() -> None:
+    async def scenario() -> None:
+        candidate = _candidate_zip()
+        patch_hash = hashlib.sha256(_patch()).hexdigest()
+        candidate_hash = hashlib.sha256(candidate).hexdigest()
+        proposal = {
+            "patch_hash": patch_hash,
+            "state": "deployment_approved",
+            "expires_at": "2099-01-01T00:00:00+00:00",
+            "payload": {
+                "candidate_archive": base64.b64encode(candidate).decode("ascii"),
+                "candidate_hash": candidate_hash,
+            },
+        }
+        handlers = object.__new__(BotHandlers)
+        handlers.settings = SimpleNamespace(
+            max_upload_bytes=1_000_000,
+            sandbox_max_files=20,
+            sandbox_max_expanded_bytes=1_000_000,
+        )
+        handlers._gate = AsyncMock(return_value=True)
+        handlers.db = SimpleNamespace(
+            get_evolution_proposal=AsyncMock(return_value=proposal),
+            audit=AsyncMock(),
+        )
+        message = SimpleNamespace(
+            reply_text=AsyncMock(),
+            reply_document=AsyncMock(side_effect=asyncio.CancelledError),
+        )
+        update = SimpleNamespace(
+            effective_message=message,
+            effective_chat=SimpleNamespace(type="private"),
+            effective_user=SimpleNamespace(id=10),
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            await handlers.evolve_export(
+                update, SimpleNamespace(args=["7", patch_hash, "candidate"]),
+            )
+
+        handlers.db.audit.assert_awaited_once_with(
+            10, "evolution.artifact_export", "7", "candidate:failed:delivery_interrupted",
+        )
+
+    asyncio.run(scenario())
+
+
+def test_evolution_export_uses_real_admin_gate_before_loading_proposal() -> None:
+    async def scenario() -> None:
+        handlers = object.__new__(BotHandlers)
+        handlers.settings = SimpleNamespace(
+            effective_admin_user_ids=frozenset({10}),
+            access_mode="public",
+            allowed_user_ids=frozenset(),
+            admin_chat_id=100,
+        )
+        handlers.db = SimpleNamespace(
+            get_evolution_proposal=AsyncMock(),
+            audit=AsyncMock(),
+            is_user_blocked=AsyncMock(return_value=False),
+        )
+        message = SimpleNamespace(
+            reply_text=AsyncMock(),
+            reply_document=AsyncMock(),
+        )
+        update = SimpleNamespace(
+            effective_message=message,
+            effective_chat=SimpleNamespace(type="private", id=20),
+            effective_user=SimpleNamespace(id=99),
+        )
+
+        await handlers.evolve_export(
+            update, SimpleNamespace(args=["7", "0" * 64, "candidate"]),
+        )
+
+        handlers.db.get_evolution_proposal.assert_not_awaited()
+        handlers.db.audit.assert_not_awaited()
+        handlers.db.is_user_blocked.assert_not_awaited()
+        message.reply_document.assert_not_awaited()
+        assert "authorized administrators" in message.reply_text.await_args.args[0]
+
+    asyncio.run(scenario())
+
+
+def test_private_gate_rejects_group_chat_before_any_action() -> None:
+    async def scenario() -> None:
+        handlers = object.__new__(BotHandlers)
+        handlers.settings = SimpleNamespace()
+        handlers.db = SimpleNamespace(is_user_blocked=AsyncMock())
+        message = SimpleNamespace(reply_text=AsyncMock())
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=10),
+            effective_message=message,
+            effective_chat=SimpleNamespace(type="group"),
+        )
+
+        assert await handlers._gate(update, private=True) is False
+        handlers.db.is_user_blocked.assert_not_awaited()
+        message.reply_text.assert_awaited_once()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_stored"),
+    [("off", False), ("on", True), (None, True)],
+)
+def test_evolution_mode_gates_proposal_storage(mode: str | None, expected_stored: bool) -> None:
+    async def scenario() -> None:
+        handlers = object.__new__(BotHandlers)
+        handlers.settings = SimpleNamespace(
+            max_upload_bytes=1_000_000,
+            max_output_chars=4_000,
+            sandbox_max_files=20,
+            sandbox_max_expanded_bytes=1_000_000,
+            admin_alerts=False,
+            sandbox_enabled=False,
+        )
+        handlers._gate = AsyncMock(return_value=True)
+        handlers._download = AsyncMock(return_value=_project_zip())
+        handlers._profile = AsyncMock(return_value=SimpleNamespace(local_only=False))
+        handlers._request_allowed = AsyncMock(return_value=42)
+        handlers._reply_text = AsyncMock()
+        handlers.db = SimpleNamespace(
+            get_setting=AsyncMock(side_effect=lambda key: {
+                "learning_paused": "off",
+                "evolution_mode": mode,
+                "current_model": "local::test-model",
+            }[key]),
+            finish_usage=AsyncMock(),
+            create_evolution_proposal=AsyncMock(return_value=7),
+        )
+        handlers.router = SimpleNamespace(
+            default_model=lambda: "local::test-model",
+            estimate_cost=AsyncMock(return_value=0.0),
+            complete=AsyncMock(return_value=AssistantResult(
+                _patch().decode(), "local::test-model",
+            )),
+        )
+        handlers.actions = SimpleNamespace(sandbox=None)
+        document = SimpleNamespace(file_name="project.zip", file_id="file-id")
+        message = SimpleNamespace(
+            reply_to_message=SimpleNamespace(document=document),
+            reply_text=AsyncMock(),
+            reply_document=AsyncMock(),
+        )
+        update = SimpleNamespace(
+            effective_message=message,
+            effective_chat=SimpleNamespace(type="private"),
+            effective_user=SimpleNamespace(id=101, full_name="Owner"),
+        )
+
+        await handlers.patch_project(update, SimpleNamespace(args=["change"]))
+
+        handlers.router.complete.assert_awaited_once()
+        message.reply_document.assert_awaited_once()
+        caption = message.reply_document.await_args.kwargs["caption"]
+        if expected_stored:
+            handlers.db.create_evolution_proposal.assert_awaited_once()
+            assert isinstance(handlers.db.create_evolution_proposal.await_args.args[2], bytes)
+            assert "Evolution proposal #7" in caption
+        else:
+            handlers.db.create_evolution_proposal.assert_not_awaited()
+            assert "not stored or staged" in caption
+
+    asyncio.run(scenario())

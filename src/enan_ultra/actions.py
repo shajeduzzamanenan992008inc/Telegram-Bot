@@ -6,6 +6,8 @@ import json
 import io
 import hashlib
 import logging
+import time
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -48,16 +50,44 @@ class ActionRegistry:
             "restart_bot_service": self._restart_bot_service,
         }
 
+    @staticmethod
+    def _with_execution_metadata(
+        name: str, operation_id: str, started_at: float, result: ActionResult,
+    ) -> ActionResult:
+        return ActionResult(
+            result.ok,
+            result.message,
+            result.data,
+            status=result.status,
+            tool_name=name,
+            operation_id=operation_id,
+            duration_ms=max(0, int((time.perf_counter() - started_at) * 1000)),
+            diagnostic=result.diagnostic,
+            verification_evidence=result.verification_evidence,
+        )
+
     async def execute(self, name: str, arguments: str, context: ActionContext) -> ActionResult:
+        started_at = time.perf_counter()
+        operation_id = uuid.uuid4().hex
+
+        def result_with_metadata(result: ActionResult) -> ActionResult:
+            return self._with_execution_metadata(name, operation_id, started_at, result)
+
         handler = self._actions.get(name)
         if not handler:
-            return ActionResult(False, "Unknown action")
+            return result_with_metadata(
+                ActionResult(False, "Unknown action", diagnostic="unknown_action"),
+            )
         try:
             payload = json.loads(arguments)
         except (TypeError, json.JSONDecodeError):
-            return ActionResult(False, "Invalid action JSON")
+            return result_with_metadata(
+                ActionResult(False, "Invalid action JSON", diagnostic="invalid_arguments"),
+            )
         if not isinstance(payload, dict):
-            return ActionResult(False, "Action arguments must be an object")
+            return result_with_metadata(
+                ActionResult(False, "Action arguments must be an object", diagnostic="invalid_arguments"),
+            )
         message = context.update.effective_message
         chat = context.update.effective_chat
         action_key = hashlib.sha256(
@@ -73,26 +103,44 @@ class ActionRegistry:
                 )
             except Exception as exc:
                 logger.warning("Action idempotency guard failed (%s)", type(exc).__name__)
-                return ActionResult(False, "Action safety check is unavailable; nothing was executed")
+                return result_with_metadata(ActionResult(
+                    False, "Action safety check is unavailable; nothing was executed",
+                    diagnostic="idempotency_check_unavailable",
+                ))
             if not claimed:
-                return ActionResult(False, "This identical action was already handled for this Telegram message")
+                return result_with_metadata(ActionResult(
+                    False, "This identical action was already handled for this Telegram message",
+                    diagnostic="duplicate_action",
+                ))
         outcome = ActionResult(False, "Action failed safely")
         try:
             outcome = await handler(payload, context)
         except Exception as exc:
             logger.warning("Telegram action %s failed (%s)", name, type(exc).__name__)
+            outcome = ActionResult(
+                False, "Action failed safely; check its integration configuration",
+                diagnostic=type(exc).__name__,
+            )
         finally:
             if claimed:
                 try:
+                    recorded_outcome = result_with_metadata(outcome)
                     await context.db.finish_action_execution(
                         chat.id, message.message_id, action_key,
-                        "complete" if outcome.ok else "failed", outcome.message,
+                        "failed" if recorded_outcome.status == "failed" else "complete",
+                        json.dumps(recorded_outcome.to_tool_result(), ensure_ascii=False)[:500],
                     )
                 except Exception as exc:
                     logger.error("Action execution audit update failed (%s)", type(exc).__name__)
-        return outcome
+        return result_with_metadata(outcome)
 
     async def approve(self, approval_id: int, approver_id: int, context: Any) -> ActionResult:
+        started_at = time.perf_counter()
+        operation_id = uuid.uuid4().hex
+        outcome = await self._approve(approval_id, approver_id, context)
+        return self._with_execution_metadata("approve", operation_id, started_at, outcome)
+
+    async def _approve(self, approval_id: int, approver_id: int, context: Any) -> ActionResult:
         record = await context.db.consume_approval(
             approval_id, approver_id, context.settings.effective_admin_user_ids,
         )
@@ -107,14 +155,24 @@ class ActionRegistry:
                 await self.home_assistant.call_service(
                     str(payload["service"]), list(payload["entity_ids"]), dict(payload.get("service_data") or {}),
                 )
-                await context.db.finish_approval(approval_id, "approved", "Home Assistant action completed")
-                return ActionResult(True, "Home Assistant action completed")
+                await context.db.finish_approval(
+                    approval_id, "approved", "service call accepted; device state unverified",
+                )
+                return ActionResult(
+                    True, "Home Assistant service call was accepted; device state was not verified.",
+                    status="unverified", diagnostic="postcondition_not_checked",
+                )
             if kind == "vm_restart":
                 if approver_id not in context.settings.effective_admin_user_ids:
                     raise PermissionError("Admin approval is required")
                 self.vm_control.request_restart()
-                await context.db.finish_approval(approval_id, "approved", "bot service restart scheduled")
-                return ActionResult(True, "Bot service graceful restart scheduled")
+                await context.db.finish_approval(
+                    approval_id, "approved", "bot service restart scheduled; restart unverified",
+                )
+                return ActionResult(
+                    True, "Bot service restart was scheduled; the restart was not verified.",
+                    status="unverified", diagnostic="restart_not_verified",
+                )
             if kind == "code_test":
                 if record["requester_id"] != approver_id or not self.sandbox:
                     raise PermissionError("The project owner must approve its test")
@@ -124,7 +182,11 @@ class ActionRegistry:
                 await context.db.finish_approval(approval_id, state, f"sandbox exit={report.exit_code}; timeout={report.timed_out}")
                 output = report.output.strip() or "pytest produced no output."
                 return ActionResult(report.exit_code == 0 and not report.timed_out,
-                                    f"Sandbox result (exit {report.exit_code}{', timeout' if report.timed_out else ''}):\n{output[-3000:]}")
+                                    f"Sandbox result (exit {report.exit_code}{', timeout' if report.timed_out else ''}):\n{output[-3000:]}",
+                                    verification_evidence=(
+                                        ("Isolated pytest exited successfully without timeout",)
+                                        if report.exit_code == 0 and not report.timed_out else ()
+                                    ))
             raise ValueError("Unknown approval action")
         except Exception as exc:
             await context.db.finish_approval(approval_id, "failed", type(exc).__name__)
@@ -132,10 +194,16 @@ class ActionRegistry:
             return ActionResult(False, "Approved action failed safely; check its integration configuration")
 
     async def deny(self, approval_id: int, approver_id: int, context: Any) -> ActionResult:
+        started_at = time.perf_counter()
+        operation_id = uuid.uuid4().hex
         denied = await context.db.deny_approval(
             approval_id, approver_id, context.settings.effective_admin_user_ids,
         )
-        return ActionResult(denied, "Approval denied" if denied else "Approval is unavailable or you are not its authorized approver")
+        outcome = ActionResult(
+            denied,
+            "Approval denied" if denied else "Approval is unavailable or you are not its authorized approver",
+        )
+        return self._with_execution_metadata("deny", operation_id, started_at, outcome)
 
     async def _send_poll(self, args: dict[str, Any], context: ActionContext) -> ActionResult:
         question = args.get("question")
@@ -152,7 +220,10 @@ class ActionRegistry:
         if msg is None:
             return ActionResult(False, "No message context")
         await msg.reply_poll(question.strip(), [item.strip() for item in options], is_anonymous=True)
-        return ActionResult(True, "Poll sent")
+        return ActionResult(
+            True, "Poll sent",
+            verification_evidence=("Telegram API returned a sent poll message",),
+        )
 
     async def _send_sticker(self, args: dict[str, Any], context: ActionContext) -> ActionResult:
         file_id = args.get("file_id")
@@ -165,7 +236,10 @@ class ActionRegistry:
         if msg is None:
             return ActionResult(False, "No message context")
         await msg.reply_sticker(file_id)
-        return ActionResult(True, "Sticker sent")
+        return ActionResult(
+            True, "Sticker sent",
+            verification_evidence=("Telegram API returned a sent sticker message",),
+        )
 
     async def _generate_image(self, args: dict[str, Any], context: ActionContext) -> ActionResult:
         if context.local_only:
@@ -193,7 +267,10 @@ class ActionRegistry:
             msg = context.update.effective_message
             await msg.reply_photo(InputFile(io.BytesIO(data), filename="generated-image.jpg"), caption="Your generated image 🎨")
             await context.db.finish_usage(event_id, context.settings.image_model or "image", {})
-            return ActionResult(True, "Generated image sent")
+            return ActionResult(
+                True, "Generated image sent",
+                verification_evidence=("Telegram API returned a sent photo message",),
+            )
         except Exception as exc:
             logger.warning("Image action failed (%s)", type(exc).__name__)
             return ActionResult(False, "Image generation failed")
@@ -234,7 +311,10 @@ class ActionRegistry:
             user.id, "home_assistant_action", summary,
             {"service": service, "entity_ids": entities, "service_data": safe_data}, "admin",
         )
-        return ActionResult(True, f"Action requires admin confirmation #{approval_id}", {"approval_id": approval_id})
+        return ActionResult(
+            True, f"Action requires admin confirmation #{approval_id}", {"approval_id": approval_id},
+            status="unverified", diagnostic="admin_approval_required",
+        )
 
     async def _restart_bot_service(self, args: dict[str, Any], context: ActionContext) -> ActionResult:
         user = context.update.effective_user
@@ -243,4 +323,8 @@ class ActionRegistry:
         approval_id = await context.db.create_approval(
             user.id, "vm_restart", "Restart the Enan Ultra Telegram service", {}, "admin",
         )
-        return ActionResult(True, f"Service restart requires admin confirmation #{approval_id}", {"approval_id": approval_id})
+        return ActionResult(
+            True, f"Service restart requires admin confirmation #{approval_id}",
+            {"approval_id": approval_id}, status="unverified",
+            diagnostic="admin_approval_required",
+        )

@@ -144,9 +144,9 @@ class TelegramZipUpdateManager:
         self.settings = settings
         self.project_root = project_root.resolve()
         self.staging_parent = staging_parent
-        # ZIP updates use the separately configured, single ADMIN_ID. Keep this
-        # identity independent from ADMIN_USER_IDS, which grants other bot rights.
-        self.admin_ids = frozenset({settings.admin_id})
+        self.admin_ids = frozenset(
+            {*getattr(settings, "effective_admin_user_ids", ()), settings.admin_id},
+        )
         self.admin_chat_id = settings.admin_chat_id
         self.deployment_enabled = bool(getattr(settings, "update_deployment_enabled", False))
         self.deployment_socket_path = Path(getattr(
@@ -189,12 +189,19 @@ class TelegramZipUpdateManager:
                 quarantine.chmod(0o700)
             return quarantine
 
-    def start_upload(self, user_id: int, chat_id: int) -> UploadSession:
+    def start_upload(
+        self, user_id: int, chat_id: int, *, ttl_seconds: int | None = None,
+    ) -> UploadSession:
         with self._lock:
             self._expire_locked()
             self._authorize(user_id, chat_id)
+            ttl = ttl_seconds or int(getattr(
+                self.settings, "update_upload_window_seconds", _UPLOAD_TTL_SECONDS,
+            ))
+            if not 1 <= ttl <= 900:
+                raise ValueError("The ZIP upload window must be between 1 and 900 seconds.")
             session = UploadSession(
-                user_id, chat_id, time.monotonic() + _UPLOAD_TTL_SECONDS,
+                user_id, chat_id, time.monotonic() + ttl,
             )
             self.upload_sessions[user_id] = session
             return session
@@ -403,14 +410,17 @@ class TelegramZipUpdateManager:
 
     def finish_production_deployment(
         self, update_id: str, *, accepted: bool, result: str,
+        deployment_state: str = "awaiting_operator_authorization",
     ) -> StagedUpdate:
         with self._lock:
             update = self.updates.get(update_id)
             if not update or update.deployment_state != "submitting":
                 raise ValueError("This production deployment request is missing or already handled.")
-            update.deployment_state = (
-                "awaiting_operator_authorization" if accepted else "failed"
-            )
+            if accepted and deployment_state not in {
+                "queued", "awaiting_operator_authorization",
+            }:
+                raise ValueError("The deployment broker returned an invalid accepted state.")
+            update.deployment_state = deployment_state if accepted else "failed"
             update.deployment_result = redact_secrets(result)[:300]
             if not accepted:
                 update.state = "deployment_failed"
