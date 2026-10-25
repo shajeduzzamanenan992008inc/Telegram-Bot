@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import math
@@ -78,6 +79,19 @@ class DeploymentError(RuntimeError):
         self.code = code
 
 
+def parse_auto_deploy_admin_ids(raw: str) -> frozenset[int]:
+    if not raw.strip():
+        return frozenset()
+    parts = [part.strip() for part in raw.split(",")]
+    if (
+        len(parts) > 100
+        or any(not part.isascii() or not part.isdecimal() for part in parts)
+        or any(int(part) <= 0 for part in parts)
+    ):
+        raise ValueError("TELEGRAM_AI_AUTO_DEPLOY_ADMIN_IDS must contain positive numeric IDs")
+    return frozenset(int(part) for part in parts)
+
+
 @dataclass(frozen=True, slots=True)
 class DeploymentPaths:
     app_root: Path = APP_ROOT
@@ -140,6 +154,7 @@ class ReleaseDeployer:
         health_timeout: int = HEALTH_TIMEOUT_SECONDS,
         sleep: Any = time.sleep,
         clock: Any = time.time,
+        auto_deploy_admin_ids: frozenset[int] = frozenset(),
     ) -> None:
         self.paths = paths
         self.systemd = systemd or Systemd()
@@ -147,6 +162,12 @@ class ReleaseDeployer:
         self.health_timeout = health_timeout
         self.sleep = sleep
         self.clock = clock
+        if any(
+            not isinstance(admin_id, int) or isinstance(admin_id, bool) or admin_id <= 0
+            for admin_id in auto_deploy_admin_ids
+        ):
+            raise ValueError("Auto-deploy administrator IDs must be positive integers")
+        self.auto_deploy_admin_ids = frozenset(auto_deploy_admin_ids)
         self._job_lock = threading.Lock()
         self._submission_lock = threading.Lock()
         self._status_lock = threading.RLock()
@@ -159,12 +180,13 @@ class ReleaseDeployer:
         archive_hash: str,
         claimed_administrator_id: int,
     ) -> bool:
-        # The Telegram service may submit a request, but its claimed admin ID is
-        # informational only. Activation requires a separate root peer approval.
+        # The Telegram service's admin claim is trusted only when the root-owned
+        # broker was explicitly configured with the same auto-deploy allowlist.
         self._validate_request(
             update_id, manifest_hash, archive_hash, claimed_administrator_id,
         )
         self._validate_state_paths()
+        auto_authorized = claimed_administrator_id in self.auto_deploy_admin_ids
         with self._submission_lock:
             connection = self._authorization_connection()
             try:
@@ -217,6 +239,11 @@ class ReleaseDeployer:
                 update_id, claimed_administrator_id,
                 "awaiting_operator_authorization", manifest_hash,
             )
+            if auto_authorized:
+                self._consume_pending_deployment(
+                    update_id, manifest_hash, operator_uid=None,
+                    auto_admin_id=claimed_administrator_id, lock_held=True,
+                )
             return True
 
     def pending_operator_approval(self, update_id: str) -> dict[str, Any]:
@@ -254,12 +281,28 @@ class ReleaseDeployer:
     ) -> bool:
         if operator_uid != 0:
             raise DeploymentError("unauthorized_operator")
+        return self._consume_pending_deployment(
+            update_id, manifest_hash, operator_uid=operator_uid,
+        )
+
+    def _consume_pending_deployment(
+        self,
+        update_id: str,
+        manifest_hash: str,
+        *,
+        operator_uid: int | None,
+        auto_admin_id: int | None = None,
+        lock_held: bool = False,
+    ) -> bool:
         if not _UPDATE_ID.fullmatch(update_id) or not _SHA256.fullmatch(manifest_hash):
             raise DeploymentError("invalid_operator_approval")
+        if auto_admin_id is not None and auto_admin_id not in self.auto_deploy_admin_ids:
+            raise DeploymentError("auto_deploy_admin_not_allowlisted")
         if self._job_lock.locked():
             raise DeploymentError("deployment_already_running")
 
-        with self._submission_lock:
+        lock = contextlib.nullcontext() if lock_held else self._submission_lock
+        with lock:
             if self._activation_scheduled or self._job_lock.locked():
                 raise DeploymentError("deployment_already_running")
             connection = self._authorization_connection()
@@ -274,6 +317,8 @@ class ReleaseDeployer:
                     raise DeploymentError("operator_approval_missing_or_used")
                 if manifest_hash != row[0]:
                     raise DeploymentError("operator_approval_digest_mismatch")
+                if auto_admin_id is not None and int(row[2]) != auto_admin_id:
+                    raise DeploymentError("auto_deploy_admin_mismatch")
                 now = self._clock_now()
                 if now >= float(row[3]):
                     connection.execute(
@@ -303,16 +348,25 @@ class ReleaseDeployer:
 
             archive_hash = str(row[1])
             administrator_id = int(row[2])
+            authorization_method = (
+                "telegram_admin_allowlist_auto_deploy"
+                if auto_admin_id is not None
+                else "root_unix_peer_and_interactive_operator"
+            )
             self._write_status(update_id, {
                 "update_id": update_id, "state": "queued",
                 "manifest_hash": manifest_hash,
                 "administrator_id": administrator_id,
-                "authorized_by_uid": operator_uid,
+                "authorization_method": authorization_method,
                 "updated_at": self._now(), "notified": False,
+                **({"authorized_by_uid": operator_uid} if operator_uid is not None else {}),
             })
             self._append_audit(
-                update_id, administrator_id, "authorized_by_root_operator",
+                update_id, administrator_id,
+                "authorized_by_admin_auto_policy"
+                if auto_admin_id is not None else "authorized_by_root_operator",
                 manifest_hash, operator_uid=operator_uid,
+                approval_method=authorization_method,
             )
             worker = threading.Thread(
                 target=self._run_submitted,
@@ -329,10 +383,11 @@ class ReleaseDeployer:
                     "update_id": update_id, "state": "failed",
                     "manifest_hash": manifest_hash,
                     "administrator_id": administrator_id,
-                    "authorized_by_uid": operator_uid,
+                    "authorization_method": authorization_method,
                     "updated_at": self._now(),
                     "failure_code": "deployment_worker_unavailable",
                     "notified": False,
+                    **({"authorized_by_uid": operator_uid} if operator_uid is not None else {}),
                 })
                 raise DeploymentError("deployment_worker_unavailable") from exc
             return True
@@ -481,11 +536,13 @@ class ReleaseDeployer:
     ) -> dict[str, Any]:
         self._write_status(update_id, {
             "update_id": update_id, "state": "validating", "manifest_hash": manifest_hash,
+            "archive_hash": archive_hash,
             "administrator_id": administrator_id, "updated_at": self._now(),
             "notified": False,
         })
         snapshot: Path | None = None
         activated = False
+        validation_passed = False
         try:
             self._check_environment()
             telegram_bot_id = self._check_baseline_health()
@@ -510,10 +567,12 @@ class ReleaseDeployer:
                 manifest = self._verify_staged_release(
                     update_id, manifest_hash, archive_hash, update_root=private_update,
                 )
+                validation_passed = True
                 snapshot = self._create_snapshot(update_id)
                 self._write_journal(update_id, {
                     "update_id": update_id, "state": "snapshot_created",
-                    "manifest_hash": manifest_hash, "snapshot": str(snapshot),
+                    "manifest_hash": manifest_hash, "archive_hash": archive_hash,
+                    "snapshot": str(snapshot),
                     "administrator_id": administrator_id, "updated_at": self._now(),
                     "telegram_bot_id": telegram_bot_id,
                 })
@@ -525,7 +584,8 @@ class ReleaseDeployer:
                 activated = True
                 self._write_journal(update_id, {
                     "update_id": update_id, "state": "applying",
-                    "manifest_hash": manifest_hash, "snapshot": str(snapshot),
+                    "manifest_hash": manifest_hash, "archive_hash": archive_hash,
+                    "snapshot": str(snapshot),
                     "administrator_id": administrator_id, "updated_at": self._now(),
                     "telegram_bot_id": telegram_bot_id,
                     "release": next_release.name,
@@ -533,7 +593,8 @@ class ReleaseDeployer:
                 self._activate_release(next_release)
                 self._write_journal(update_id, {
                     "update_id": update_id, "state": "restarting",
-                    "manifest_hash": manifest_hash, "snapshot": str(snapshot),
+                    "manifest_hash": manifest_hash, "archive_hash": archive_hash,
+                    "snapshot": str(snapshot),
                     "administrator_id": administrator_id, "updated_at": self._now(),
                     "telegram_bot_id": telegram_bot_id,
                     "release": next_release.name,
@@ -544,10 +605,12 @@ class ReleaseDeployer:
                 )
                 self._write_journal(update_id, {
                     "update_id": update_id, "state": "succeeded",
-                    "manifest_hash": manifest_hash, "snapshot": str(snapshot),
+                    "manifest_hash": manifest_hash, "archive_hash": archive_hash,
+                    "snapshot": str(snapshot),
                     "administrator_id": administrator_id, "updated_at": self._now(),
                     "active_pid": new_pid,
                     "release": next_release.name,
+                    "validation": {"syntax": "PASS", "tests": "PASS"},
                 })
                 self._append_audit(update_id, administrator_id, "succeeded", manifest_hash)
                 return self._public_status(update_id)
@@ -564,26 +627,41 @@ class ReleaseDeployer:
                     state = "rolled_back"
                     self._write_journal(update_id, {
                         "update_id": update_id, "state": state,
-                        "manifest_hash": manifest_hash, "snapshot": str(snapshot),
+                        "manifest_hash": manifest_hash, "archive_hash": archive_hash,
+                        "snapshot": str(snapshot),
                         "administrator_id": administrator_id, "updated_at": self._now(),
                         "failure_code": code, "active_pid": recovered_pid,
+                        "validation": (
+                            {"syntax": "PASS", "tests": "PASS"}
+                            if validation_passed else {"syntax": "NOT VERIFIED", "tests": "NOT VERIFIED"}
+                        ),
                     })
                     self._append_audit(update_id, administrator_id, state, manifest_hash)
                 except (DeploymentError, OSError, ValueError):
                     state = "rollback_failed"
                     self._write_journal(update_id, {
                         "update_id": update_id, "state": state,
-                        "manifest_hash": manifest_hash, "snapshot": str(snapshot),
+                        "manifest_hash": manifest_hash, "archive_hash": archive_hash,
+                        "snapshot": str(snapshot),
                         "administrator_id": administrator_id, "updated_at": self._now(),
                         "failure_code": code,
+                        "validation": (
+                            {"syntax": "PASS", "tests": "PASS"}
+                            if validation_passed else {"syntax": "NOT VERIFIED", "tests": "NOT VERIFIED"}
+                        ),
                     })
                     self._append_audit(update_id, administrator_id, state, manifest_hash)
             else:
                 state = "failed"
                 self._write_journal(update_id, {
                     "update_id": update_id, "state": state,
-                    "manifest_hash": manifest_hash, "administrator_id": administrator_id,
+                    "manifest_hash": manifest_hash, "archive_hash": archive_hash,
+                    "administrator_id": administrator_id,
                     "updated_at": self._now(), "failure_code": code,
+                    "validation": (
+                        {"syntax": "PASS", "tests": "PASS"}
+                        if validation_passed else {"syntax": "NOT VERIFIED", "tests": "NOT VERIFIED"}
+                    ),
                 })
                 self._append_audit(update_id, administrator_id, state, manifest_hash)
             return self._public_status(update_id)
@@ -1566,7 +1644,7 @@ class ReleaseDeployer:
 
     def _append_audit(
         self, update_id: str, administrator_id: int, state: str, manifest_hash: str,
-        *, operator_uid: int | None = None,
+        *, operator_uid: int | None = None, approval_method: str | None = None,
     ) -> None:
         self._validate_state_paths()
         path = self.paths.history_root / "audit.jsonl"
@@ -1585,7 +1663,8 @@ class ReleaseDeployer:
             record[identity_key] = administrator_id
             if operator_uid is not None:
                 record["operator_uid"] = operator_uid
-                record["approval_method"] = "root_unix_peer_and_interactive_operator"
+            if approval_method is not None:
+                record["approval_method"] = approval_method
             output.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
         if os.name != "nt":
             path.chmod(0o600)
@@ -1639,11 +1718,26 @@ class ReleaseDeployer:
             return None
         data = json.loads(path.read_text(encoding="utf-8"))
         allowed = {
-            "update_id", "state", "manifest_hash", "administrator_id",
+            "update_id", "state", "manifest_hash", "archive_hash", "administrator_id",
             "claimed_administrator_id", "authorized_by_uid",
-            "updated_at", "notified", "failure_code", "active_pid", "snapshot",
+            "authorization_method", "updated_at", "notified", "failure_code",
+            "active_pid", "validation",
         }
         output = {key: data[key] for key in allowed if key in data}
+        archive_hash = output.get("archive_hash")
+        if not isinstance(archive_hash, str) or not _SHA256.fullmatch(archive_hash):
+            output.pop("archive_hash", None)
+        snapshot = data.get("snapshot")
+        if isinstance(snapshot, str):
+            backup_id = Path(snapshot).name
+            if re.fullmatch(r"\d{8}T\d{6}Z-[0-9a-f]{8}", backup_id):
+                output["backup_id"] = backup_id
+        validation = output.get("validation")
+        if validation not in (
+            {"syntax": "PASS", "tests": "PASS"},
+            {"syntax": "NOT VERIFIED", "tests": "NOT VERIFIED"},
+        ):
+            output.pop("validation", None)
         failure_code = output.get("failure_code")
         if failure_code is not None and (
             not isinstance(failure_code, str)
@@ -1712,8 +1806,16 @@ class DeploymentRequestHandler(socketserver.StreamRequestHandler):
             )
             if not accepted:
                 return {"ok": False, "error": "duplicate_or_replayed_request"}
+            auto_authorized = (
+                claimed_administrator_id in self.deployer.auto_deploy_admin_ids
+            )
             return {
-                "ok": True, "accepted": True, "state": "awaiting_operator_authorization",
+                "ok": True, "accepted": True,
+                "state": "queued" if auto_authorized else "awaiting_operator_authorization",
+                "authorization_method": (
+                    "telegram_admin_allowlist_auto_deploy"
+                    if auto_authorized else "root_unix_peer_and_interactive_operator"
+                ),
                 "update_id": update_id,
             }
         if operation == "approval_details":
@@ -1899,12 +2001,20 @@ def serve() -> None:
         allowed_uid = pwd.getpwnam(SERVICE_USER).pw_uid
     except KeyError as exc:
         raise SystemExit("The configured bot service account does not exist.") from exc
+    try:
+        auto_deploy_admin_ids = parse_auto_deploy_admin_ids(
+            os.environ.get("TELEGRAM_AI_AUTO_DEPLOY_ADMIN_IDS", ""),
+        )
+    except ValueError as exc:
+        raise SystemExit(
+            "Invalid TELEGRAM_AI_AUTO_DEPLOY_ADMIN_IDS; deployment broker not started."
+        ) from exc
     listener_fds = int(os.environ.get("LISTEN_FDS", "0"))
     listener_pid = int(os.environ.get("LISTEN_PID", "0"))
     if listener_fds != 1 or listener_pid != os.getpid():
         raise SystemExit("The deployment broker must be started by its systemd socket unit.")
     listener = socket.fromfd(3, socket.AF_UNIX, socket.SOCK_STREAM)
-    deployer = ReleaseDeployer()
+    deployer = ReleaseDeployer(auto_deploy_admin_ids=auto_deploy_admin_ids)
     deployer.recover_interrupted_deployments()
     server = DeploymentServer(str(SOCKET_PATH), deployer, allowed_uid, listener)
     server.serve_forever(poll_interval=0.5)

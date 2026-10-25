@@ -16,6 +16,7 @@ import pytest
 
 from enan_ultra.handlers import BotHandlers
 from enan_ultra.services.telegram_zip_updates import TelegramZipUpdateManager
+from enan_ultra.storage.database import Database
 
 ADMIN_ID = 1234
 ADMIN_CHAT = 9876
@@ -51,7 +52,7 @@ def _manager(
     return TelegramZipUpdateManager(settings, project, tmp_path / "state" / ".updates")
 
 
-def test_update_admin_can_be_separate_from_general_admin_allowlist(tmp_path: Path) -> None:
+def test_zip_staging_accepts_configured_administrators(tmp_path: Path) -> None:
     update_admin = ADMIN_ID + 1
     manager = _manager(
         tmp_path, admin_id=update_admin, admin_user_ids=frozenset({ADMIN_ID}),
@@ -59,10 +60,11 @@ def test_update_admin_can_be_separate_from_general_admin_allowlist(tmp_path: Pat
 
     manager.start_upload(update_admin, ADMIN_CHAT)
     staged = manager.prepare(update_admin, ADMIN_CHAT, "release.zip", _zip(VALID_FILES))
+    manager.start_upload(ADMIN_ID, ADMIN_CHAT)
 
     assert staged.uploader_id == update_admin
-    with pytest.raises(PermissionError):
-        manager.start_upload(ADMIN_ID, ADMIN_CHAT)
+    assert manager.has_upload_session(ADMIN_ID)
+    assert manager.cancel_upload(ADMIN_ID, ADMIN_CHAT)
 
 
 def _zip(
@@ -199,7 +201,7 @@ def test_active_telegram_zip_handler_scans_and_stages_without_touching_live_tree
     handler.update_manager = manager
     handler._update_lock = asyncio.Lock()
     handler.actions = SimpleNamespace(sandbox=None)
-    handler.db = SimpleNamespace(audit=AsyncMock())
+    handler.db = Database(tmp_path / "upload-gate.sqlite3")
     handler._send_update_preview = AsyncMock()
 
     scanned: list[bytes] = []
@@ -230,7 +232,14 @@ def test_active_telegram_zip_handler_scans_and_stages_without_touching_live_tree
         effective_user=SimpleNamespace(id=ADMIN_ID),
     )
 
-    asyncio.run(handler._receive_update_zip(update, SimpleNamespace(bot=Bot())))
+    async def run_upload() -> None:
+        await handler.db.open()
+        await handler.db.open_update_upload_gate(ADMIN_ID, time.time(), 300)
+        await handler._receive_update_zip(update, SimpleNamespace(bot=Bot()))
+        assert (await handler.db.get_update_upload_gate(time.time()))["state"] == "disabled"
+        await handler.db.close()
+
+    asyncio.run(run_upload())
 
     assert scanned == [archive_data]
     assert live_runtime.read_text(encoding="utf-8") == "# old runtime\n"
@@ -241,7 +250,7 @@ def test_active_telegram_zip_handler_scans_and_stages_without_touching_live_tree
     assert list(manager.quarantine_directory().iterdir()) == []
 
 
-def test_admin_zip_documents_with_or_without_update_caption_enter_staging() -> None:
+def test_zip_documents_route_to_upload_handler_for_gate_enforcement() -> None:
     handler = BotHandlers.__new__(BotHandlers)
     handler.settings = SimpleNamespace(
         admin_id=ADMIN_ID, admin_chat_id=ADMIN_CHAT,
@@ -250,7 +259,7 @@ def test_admin_zip_documents_with_or_without_update_caption_enter_staging() -> N
     handler.sticker_collector = None
     handler._receive_update_zip = AsyncMock()
 
-    async def route(caption: str | None, message_id: int) -> None:
+    async def route(caption: str | None, message_id: int, user_id: int = ADMIN_ID) -> None:
         message = SimpleNamespace(
             text=None, caption=caption, message_id=message_id, reply_to_message=None,
             document=SimpleNamespace(file_name="release.zip"),
@@ -258,14 +267,15 @@ def test_admin_zip_documents_with_or_without_update_caption_enter_staging() -> N
         update = SimpleNamespace(
             effective_message=message,
             effective_chat=SimpleNamespace(id=ADMIN_CHAT, type="private"),
-            effective_user=SimpleNamespace(id=ADMIN_ID, is_bot=False),
+            effective_user=SimpleNamespace(id=user_id, is_bot=False),
         )
         await handler.on_message(update, SimpleNamespace())
 
     async def scenario() -> None:
         await route("/update", 1)
         await route(None, 2)
-        assert handler._receive_update_zip.await_count == 2
+        await route(None, 3, ADMIN_ID + 1)
+        assert handler._receive_update_zip.await_count == 3
 
     asyncio.run(scenario())
 
@@ -287,7 +297,7 @@ def test_active_telegram_zip_handler_keeps_upload_quarantined_when_scanner_is_un
     handler.update_manager = manager
     handler._update_lock = asyncio.Lock()
     handler.actions = SimpleNamespace(sandbox=None)
-    handler.db = SimpleNamespace(audit=AsyncMock())
+    handler.db = Database(tmp_path / "upload-gate.sqlite3")
     handler._send_update_preview = AsyncMock()
 
     async def unavailable_scan(_data: bytes, _socket: str, **_kwargs) -> None:
@@ -316,7 +326,14 @@ def test_active_telegram_zip_handler_keeps_upload_quarantined_when_scanner_is_un
         effective_user=SimpleNamespace(id=ADMIN_ID),
     )
 
-    asyncio.run(handler._receive_update_zip(update, SimpleNamespace(bot=Bot())))
+    async def run_upload() -> None:
+        await handler.db.open()
+        await handler.db.open_update_upload_gate(ADMIN_ID, time.time(), 300)
+        await handler._receive_update_zip(update, SimpleNamespace(bot=Bot()))
+        assert (await handler.db.get_update_upload_gate(time.time()))["state"] == "disabled"
+        await handler.db.close()
+
+    asyncio.run(run_upload())
 
     quarantined = list(manager.quarantine_directory().glob("*.zip"))
     assert len(quarantined) == 1
@@ -720,8 +737,15 @@ def test_test_summary_redacts_credential_assignments(tmp_path: Path) -> None:
     assert "OPENROUTER_API_KEY=unit-test-placeholder" not in staged.test_summary
     assert "TELEGRAM_BOT_TOKEN=unit-test-placeholder" not in staged.test_summary
 
+@pytest.mark.parametrize(
+    ("broker_state", "expected_state"),
+    [
+        ("awaiting_operator_authorization", "awaiting_operator_authorization"),
+        ("queued", "queued"),
+    ],
+)
 def test_production_callback_authorizes_exact_release_and_rejects_replay(
-    tmp_path: Path, monkeypatch,
+    tmp_path: Path, monkeypatch, broker_state: str, expected_state: str,
 ) -> None:
     manager = _manager(tmp_path, deployment_enabled=True)
     release_files = dict(VALID_FILES)
@@ -747,7 +771,7 @@ def test_production_callback_authorizes_exact_release_and_rejects_replay(
             assert args == (
                 staged.update_id, staged.release_hash, staged.archive_sha256, ADMIN_ID,
             )
-            return {"ok": True, "accepted": True}
+            return {"ok": True, "accepted": True, "state": broker_state}
 
     monkeypatch.setattr(
         "enan_ultra.handlers.TelegramDeploymentClient", _AcceptedDeployment,
@@ -777,13 +801,17 @@ def test_production_callback_authorizes_exact_release_and_rejects_replay(
         query, update = callback(ADMIN_ID, ADMIN_CHAT)
         await handler.update_callback(update, None)
         query.answer.assert_awaited_once_with()
-        assert staged.deployment_state == "awaiting_operator_authorization"
+        assert staged.deployment_state == expected_state
+        if broker_state == "queued":
+            assert "auto-deploy policy authorized" in query.message.reply_text.await_args.args[0]
+        else:
+            assert "root operator authorization" in query.message.reply_text.await_args.args[0]
         assert handler.db.audit.await_count == 2
 
         replay, replay_update = callback(ADMIN_ID, ADMIN_CHAT)
         await handler.update_callback(replay_update, None)
         replay.answer.assert_awaited_once()
         assert replay.answer.call_args.kwargs["show_alert"] is True
-        assert staged.deployment_state == "awaiting_operator_authorization"
+        assert staged.deployment_state == expected_state
 
     asyncio.run(scenario())

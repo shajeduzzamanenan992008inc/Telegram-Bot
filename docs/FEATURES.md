@@ -411,7 +411,7 @@ Models and integrations
 | 81 | Rate limiting and abuse protection | Implemented | P0/V1 · configured limits |
 | 82 | Treat prompt/document inputs as untrusted | Implemented | P0/V1 · prompt/input boundaries |
 | 83 | Isolate tool execution | Implemented | P0/V1 · restricted sandbox |
-| 84 | Tamper-evident immutable audit ledger | Partial | P1/V2 · SQLite audit; immutable ledger absent |
+| 84 | Tamper-evident immutable audit ledger | Partial | P1/V2 · SQLite audit hash chain detects row changes; no external immutable anchor, and privacy deletion re-chains retained rows |
 | 85 | Privacy mode and local-only processing | Implemented | P0/V1 · local Ollama |
 | 86 | User data export/delete controls | Implemented | P1/V2 · database lifecycle |
 | 87 | Provider/API health and outage monitoring | Partial | P1/V2 · probes; full alerting absent |

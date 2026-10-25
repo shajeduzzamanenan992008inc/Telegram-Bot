@@ -111,6 +111,12 @@ def build_application(settings: Settings) -> Application:
         application_ref = app
         router.failure_notifier = schedule_provider_failure_alert
         await db.open()
+        recovered_update_gate = await db.recover_update_upload_gate(time.time())
+        if recovered_update_gate:
+            logger.info(
+                "Closed %s interrupted or expired ZIP upload gate(s)",
+                recovered_update_gate,
+            )
         recovered_missions = await db.recover_missions_after_restart()
         if recovered_missions:
             logger.info("Paused %s interrupted mission(s) for explicit owner resumption", recovered_missions)
