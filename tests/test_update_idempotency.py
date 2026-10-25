@@ -168,7 +168,7 @@ def test_update_authorization_prevents_non_admin_staging() -> None:
         )
         await handlers.update(update, SimpleNamespace())
         reply_text.assert_awaited_once()
-        assert "ADMIN_ID" in reply_text.await_args.args[0]
+        assert "configured Telegram administrators" in reply_text.await_args.args[0]
 
     asyncio.run(scenario())
 
@@ -202,4 +202,3 @@ def test_non_admin_cannot_block_or_unblock_users() -> None:
         )
 
     asyncio.run(scenario())
-
