@@ -77,6 +77,11 @@ class _HttpAdapter:
         async def request(key: str | None, _key_index: int) -> httpx.Response:
             if method.upper() == "POST" and not consume_provider_attempt():
                 raise ProviderError("The per-request provider attempt limit was reached", category="attempt_limit")
+            if self.key_header and not key:
+                raise ProviderError(
+                    f"{self.name} is not configured with API credentials",
+                    category="invalid_credential",
+                )
             headers = dict(original_headers)
             if key and self.key_header:
                 headers[self.key_header] = self._credential_header_value(key)
@@ -96,6 +101,11 @@ class _HttpAdapter:
         async def request(key: str | None, _key_index: int) -> Any:
             if method.upper() == "POST" and not consume_provider_attempt():
                 raise ProviderError("The per-request provider attempt limit was reached", category="attempt_limit")
+            if self.key_header and not key:
+                raise ProviderError(
+                    f"{self.name} is not configured with API credentials",
+                    category="invalid_credential",
+                )
             headers = dict(original_headers)
             if key and self.key_header:
                 headers[self.key_header] = self._credential_header_value(key)

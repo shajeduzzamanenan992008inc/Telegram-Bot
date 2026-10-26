@@ -41,7 +41,7 @@ def test_openrouter_image_generation_uses_current_endpoint_and_media_type() -> N
             }]})
 
         settings = SimpleNamespace(
-            openrouter_keys=(), openrouter_base_url="https://openrouter.example/v1",
+            openrouter_keys=("media-test-key",), openrouter_base_url="https://openrouter.example/v1",
             display_name="Enan Ultra", image_model="removed/old-model",
             fallback_models=(), max_image_bytes=10_000,
         )
@@ -138,7 +138,7 @@ def test_openrouter_tts_uses_configured_model() -> None:
             return httpx.Response(200, content=b"generated-audio", headers={"content-type": "audio/mpeg"})
 
         settings = SimpleNamespace(
-            openrouter_keys=(), openrouter_base_url="https://openrouter.example/v1",
+            openrouter_keys=("media-test-key",), openrouter_base_url="https://openrouter.example/v1",
             display_name="Enan Ultra", fallback_models=(),
             tts_model="mistralai/voxtral-mini-tts-2603", tts_voice="alloy",
             max_upload_bytes=10_000,
