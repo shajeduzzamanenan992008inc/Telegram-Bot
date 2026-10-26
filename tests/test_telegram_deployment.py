@@ -6,6 +6,7 @@ import os
 import re
 import sqlite3
 import tempfile
+import threading
 import time
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -227,7 +228,7 @@ def _deploy(deployer: ReleaseDeployer, staged: object) -> dict[str, object]:
 
 
 def test_broker_requires_root_one_time_authorization_after_telegram_approval(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager, staged = _make_release(tmp_path, test_sandbox=_PassingSandbox())
     _approve_staging(manager, staged)
@@ -277,25 +278,34 @@ def test_broker_requires_root_one_time_authorization_after_telegram_approval(
         )
     assert systemd.restart_count == 0
 
+    worker_finished = threading.Event()
+    run_submitted = deployer._run_submitted
+
+    def track_worker_completion(
+        update_id: str, manifest_hash: str, archive_hash: str, administrator_id: int,
+    ) -> None:
+        try:
+            run_submitted(update_id, manifest_hash, archive_hash, administrator_id)
+        finally:
+            worker_finished.set()
+
+    monkeypatch.setattr(deployer, "_run_submitted", track_worker_completion)
     assert deployer.authorize_pending_deployment(
         staged.update_id, staged.release_hash, operator_uid=0,
     )
-    deadline = time.monotonic() + 5
+    assert worker_finished.wait(timeout=60), (
+        f"Deployment worker did not finish within 60 seconds: {deployer.status(staged.update_id)}"
+    )
     result = deployer.status(staged.update_id)
-    while result and result["state"] not in {
-        "succeeded", "failed", "rolled_back", "rollback_failed",
-    } and time.monotonic() < deadline:
-        time.sleep(0.01)
-        result = deployer.status(staged.update_id)
-    assert result is not None and result["state"] == "succeeded", result
+    assert result is not None
+    assert result["state"] in {"succeeded", "failed", "rolled_back", "rollback_failed"}, result
+    assert result["state"] == "succeeded", result
     assert result["archive_hash"] == staged.archive_sha256
     assert result["backup_id"] == f"20270115T080000Z-{staged.update_id}"
     assert result["validation"] == {"syntax": "PASS", "tests": "PASS"}
     assert "snapshot" not in result
     assert systemd.restart_count == 1
-    cleanup_deadline = time.monotonic() + 2
-    while deployer._activation_scheduled and time.monotonic() < cleanup_deadline:
-        time.sleep(0.01)
+    assert not deployer._activation_scheduled
     with pytest.raises(DeploymentError, match="operator_approval_missing_or_used"):
         deployer.authorize_pending_deployment(
             staged.update_id, staged.release_hash, operator_uid=0,

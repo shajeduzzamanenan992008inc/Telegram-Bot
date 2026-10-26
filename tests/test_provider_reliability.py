@@ -375,6 +375,142 @@ def test_request_attempt_budget_stops_before_second_credential() -> None:
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize(("provider", "streaming"), [
+    ("openrouter", False),
+    ("openrouter", True),
+    ("openai", False),
+    ("openai", True),
+])
+def test_authorization_credentials_are_sent_but_not_logged(
+    provider: str, streaming: bool, caplog: pytest.LogCaptureFixture,
+) -> None:
+    from enan_ultra.services.openrouter import OpenRouter
+
+    credential = "fixture-credential-not-for-logs"
+    settings = SimpleNamespace(
+        openrouter_keys=(credential,), openrouter_base_url="https://provider.example.test/v1",
+        openai_keys=(credential,), database_path=None, display_name="test",
+        ai_max_retries_per_key=0, ai_request_timeout=5,
+        ai_circuit_breaker_cooldown=60,
+    )
+    adapter = (
+        OpenRouter(settings) if provider == "openrouter"
+        else OpenAICompatibleAdapter(
+            settings, "openai", "https://provider.example.test/v1", "", "test-model",
+        )
+    )
+    sent_headers: list[str] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        sent_headers.append(request.headers.get("authorization", ""))
+        return httpx.Response(200, json={"data": []}, request=request)
+
+    async def scenario() -> None:
+        await adapter.close()
+        adapter.client = httpx.AsyncClient(
+            base_url="https://provider.example.test/v1",
+            transport=httpx.MockTransport(respond),
+        )
+        try:
+            if streaming:
+                async def consume(response: httpx.Response) -> int:
+                    return response.status_code
+
+                result = await adapter._stream_request("GET", "/probe", consume)
+                assert result == 200
+            else:
+                response = await adapter._request("GET", "/probe")
+                assert response.status_code == 200
+        finally:
+            await adapter.close()
+
+    asyncio.run(scenario())
+    assert sent_headers == [f"Bearer {credential}"]
+    assert credential not in caplog.text
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "openai"])
+def test_missing_provider_credentials_fail_without_http_request(provider: str) -> None:
+    from enan_ultra.services.openrouter import OpenRouter
+
+    settings = SimpleNamespace(
+        openrouter_keys=(), openrouter_base_url="https://provider.example.test/v1",
+        openai_keys=(), database_path=None, display_name="test",
+        ai_max_retries_per_key=0, ai_request_timeout=5,
+        ai_circuit_breaker_cooldown=60,
+    )
+    adapter = (
+        OpenRouter(settings) if provider == "openrouter"
+        else OpenAICompatibleAdapter(
+            settings, "openai", "https://provider.example.test/v1", "", "test-model",
+        )
+    )
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"data": []}, request=request)
+
+    async def scenario() -> None:
+        await adapter.close()
+        adapter.client = httpx.AsyncClient(
+            base_url="https://provider.example.test/v1",
+            transport=httpx.MockTransport(respond),
+        )
+        try:
+            with pytest.raises(ProviderError, match="not configured with API credentials") as raised:
+                await adapter._request("GET", "/probe")
+            assert raised.value.category == "invalid_credential"
+        finally:
+            await adapter.close()
+
+    asyncio.run(scenario())
+    assert requests == []
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "openai"])
+def test_provider_error_and_auth_failure_log_do_not_expose_credential(
+    provider: str, caplog: pytest.LogCaptureFixture,
+) -> None:
+    from enan_ultra.services.openrouter import OpenRouter
+
+    credential = "fixture-credential-hidden-on-error"
+    settings = SimpleNamespace(
+        openrouter_keys=(credential,), openrouter_base_url="https://provider.example.test/v1",
+        openai_keys=(credential,), database_path=None, display_name="test",
+        ai_max_retries_per_key=0, ai_request_timeout=5,
+        ai_circuit_breaker_cooldown=60,
+    )
+    adapter = (
+        OpenRouter(settings) if provider == "openrouter"
+        else OpenAICompatibleAdapter(
+            settings, "openai", "https://provider.example.test/v1", "", "test-model",
+        )
+    )
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            401, json={"error": {"message": credential}}, request=request,
+        )
+
+    async def scenario() -> str:
+        await adapter.close()
+        adapter.client = httpx.AsyncClient(
+            base_url="https://provider.example.test/v1",
+            transport=httpx.MockTransport(respond),
+        )
+        try:
+            with pytest.raises(ProviderError) as raised:
+                await adapter._request("GET", "/probe")
+            return str(raised.value)
+        finally:
+            await adapter.close()
+
+    error_message = asyncio.run(scenario())
+    assert credential not in error_message
+    assert credential not in caplog.text
+
+
 def test_openrouter_quota_error_does_not_try_internal_model_fallback(monkeypatch, tmp_path: Path) -> None:
     from enan_ultra.services.openrouter import OpenRouter
 

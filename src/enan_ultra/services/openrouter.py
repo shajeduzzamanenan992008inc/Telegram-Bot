@@ -55,6 +55,11 @@ class OpenRouter:
         async def request(key: str | None, _key_index: int) -> httpx.Response:
             if method.upper() == "POST" and not consume_provider_attempt():
                 raise ProviderError("The per-request provider attempt limit was reached", category="attempt_limit")
+            if not key:
+                raise ProviderError(
+                    "OpenRouter is not configured with API credentials",
+                    category="invalid_credential",
+                )
             headers = dict(original_headers)
             if key:
                 headers["Authorization"] = f"Bearer {key}"
@@ -74,6 +79,11 @@ class OpenRouter:
         async def request(key: str | None, _key_index: int) -> Any:
             if method.upper() == "POST" and not consume_provider_attempt():
                 raise ProviderError("The per-request provider attempt limit was reached", category="attempt_limit")
+            if not key:
+                raise ProviderError(
+                    "OpenRouter is not configured with API credentials",
+                    category="invalid_credential",
+                )
             headers = dict(original_headers)
             if key:
                 headers["Authorization"] = f"Bearer {key}"
