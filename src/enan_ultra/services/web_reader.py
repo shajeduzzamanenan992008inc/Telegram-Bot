@@ -7,8 +7,9 @@ import ipaddress
 import socket
 from urllib.parse import urlsplit
 
-import httpx
 from bs4 import BeautifulSoup
+
+from enan_ultra.security import fetch_public_https_document
 
 MAX_HTML_BYTES = 2 * 1024 * 1024
 _REMOVED_TAGS = (
@@ -20,29 +21,10 @@ _REMOVED_TAGS = (
 async def fetch_page_text(url: str) -> str:
     """Fetch a public HTML page without redirects and return its readable text."""
     parsed = _validate_url(url)
-    await _validate_public_host(parsed.hostname or "")
-    timeout = httpx.Timeout(connect=5, read=12, write=5, pool=5)
-    async with httpx.AsyncClient(
-        timeout=timeout, follow_redirects=False, trust_env=False,
-        headers={"User-Agent": "EnanUltra-WebReader/1.0", "Accept": "text/html"},
-    ) as client:
-        async with client.stream("GET", str(parsed)) as response:
-            if 300 <= response.status_code < 400:
-                raise ValueError("Redirects are not followed for webpage reading")
-            response.raise_for_status()
-            content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-            if content_type not in {"text/html", "application/xhtml+xml"}:
-                raise ValueError("The URL did not return an HTML page")
-            length = response.headers.get("content-length")
-            if length and int(length) > MAX_HTML_BYTES:
-                raise ValueError("The webpage is larger than the 2 MiB reading limit")
-            body = bytearray()
-            async for chunk in response.aiter_bytes():
-                body.extend(chunk)
-                if len(body) > MAX_HTML_BYTES:
-                    raise ValueError("The webpage is larger than the 2 MiB reading limit")
-
-    return extract_html_text(bytes(body))
+    # The fetch itself validates and pins every resolved address, so a hostname
+    # cannot be re-resolved to a private address between validation and connect.
+    body = await fetch_public_https_document(parsed.geturl(), max_bytes=MAX_HTML_BYTES)
+    return extract_html_text(body)
 
 
 def extract_html_text(html: bytes | str) -> str:
