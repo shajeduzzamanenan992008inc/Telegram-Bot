@@ -495,7 +495,7 @@ class Settings:
             update_upload_window_seconds=_int("UPDATE_UPLOAD_WINDOW_SECONDS", 300, 30, 900),
             update_deployment_enabled=_bool("UPDATE_DEPLOYMENT_ENABLED", False),
             update_deployment_socket_path=Path(
-                _value("UPDATE_DEPLOYMENT_SOCKET_PATH", "/run/telegram-ai-deploy.sock"),
+                _value("UPDATE_DEPLOYMENT_SOCKET_PATH", "/run/telegram-ai-deploy.sock" if os.name != "nt" else r"\\.\pipe\telegram-ai-deploy"),
             ),
             max_document_pages=_int("MAX_DOCUMENT_PAGES", 100, 1, 2000),
             max_video_seconds=_int("MAX_VIDEO_SECONDS", 120, 1, 3600),
@@ -527,7 +527,7 @@ class Settings:
             media_style=_value("MEDIA_STYLE", "balanced").lower(),
             admin_alerts=_bool("ADMIN_ALERTS", True),
             malware_scan_enabled=_bool("MALWARE_SCAN_ENABLED", False),
-            clamav_socket_path=Path(_value("CLAMAV_SOCKET_PATH", "/var/run/clamav/clamd.ctl")),
+            clamav_socket_path=Path(_value("CLAMAV_SOCKET_PATH", "/var/run/clamav/clamd.ctl" if os.name != "nt" else r"\\.\pipe\clamav")),
             log_level=_value("LOG_LEVEL", "INFO").upper(),
             local_bot_api_base_url=_value("LOCAL_BOT_API_BASE_URL"),
             local_bot_api_file_url=_value("LOCAL_BOT_API_FILE_URL"),

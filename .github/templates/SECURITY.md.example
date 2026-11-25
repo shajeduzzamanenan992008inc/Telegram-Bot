@@ -1,0 +1,27 @@
+# Security Policy
+
+## Supported versions
+
+List the exact supported release branches/versions and their security-update status here. Do not imply support for versions that are not maintained.
+
+| Version | Supported |
+|---|---|
+| [VERSION] | [YES / NO / END-OF-LIFE DATE] |
+
+## Reporting a vulnerability
+
+Please do not report security vulnerabilities through public issues, discussions, or social media.
+
+Report privately using **[PRIVATE VULNERABILITY REPORTING URL OR SECURITY CONTACT]**. Include affected version/commit, impact, reproduction details, and safe proof-of-concept information. Do not include real user data or live credentials.
+
+## Response expectations
+
+Publish the team's actual acknowledgement, triage, remediation, and disclosure targets here: **[RESPONSE POLICY]**. Do not promise a response window the team cannot meet.
+
+## Disclosure and coordination
+
+Describe the project's coordinated disclosure process, credit policy, release process, and any applicable legal/safety constraints here.
+
+## Scope and safe harbor
+
+Describe authorized assets and prohibited testing. Do not invite denial-of-service, social engineering, physical attacks, privacy violations, or testing against third-party systems.

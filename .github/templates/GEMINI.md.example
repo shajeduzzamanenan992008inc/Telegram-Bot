@@ -1,0 +1,5 @@
+# Project Instructions for Gemini-Compatible Agents
+
+Read `.github/copilot-instructions.md` for the full repository engineering, security, testing, and operations policy. Confirm that the active harness loads this linked file; otherwise copy relevant rules into this file.
+
+Discover the real repository stack and project commands before changing code. Preserve working behavior and existing user changes. Use least privilege, validate untrusted input, test relevant behavior, and report exact commands/results and limitations. Do not perform destructive or production-impacting actions without explicit approval.

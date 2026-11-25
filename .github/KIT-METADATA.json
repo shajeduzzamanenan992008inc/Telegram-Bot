@@ -1,0 +1,15 @@
+{
+  "name": "Universal Enterprise Engineering Kit",
+  "slug": "universal-enterprise-engineering-kit",
+  "version": "0.7.0a1",
+  "releaseDate": "2026-11-08",
+  "packageType": "github-repository-toolkit",
+  "primaryIntegration": "GitHub Copilot and GitHub Actions",
+  "projectProfileSchemaVersion": 1,
+  "licenseTemplate": "licensing/COMMERCIAL-LICENSE-TEMPLATE.md",
+  "limitations": [
+    "Not an application framework or hosted CI service",
+    "Does not automatically enable GitHub organization/repository settings",
+    "Project-specific build, test, signing, deployment, and compliance controls require configuration and validation"
+  ]
+}

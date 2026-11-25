@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "project": {
+    "name": "CHANGE-ME",
+    "description": "Describe the software product or repository.",
+    "type": "auto",
+    "criticality": "normal",
+    "languages": ["auto"],
+    "platforms": ["auto"],
+    "deploymentTargets": []
+  },
+  "governance": {
+    "dataClassification": ["unclassified"],
+    "securityBaseline": "strict",
+    "accessibilityRequired": true,
+    "changeApprovalRequiredForProduction": true
+  },
+  "ci": {
+    "enabled": true,
+    "noChecksPolicy": "warn",
+    "checks": []
+  }
+}

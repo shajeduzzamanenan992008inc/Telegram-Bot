@@ -1,0 +1,92 @@
+# EXAMPLE CATALOG ONLY — do not copy every entry blindly.
+# Keep an entry only if the repository actually contains that ecosystem's manifest/lockfile.
+# For monorepos, create one entry per real package directory as necessary.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule: { interval: "weekly" }
+  - package-ecosystem: "npm" # npm, pnpm and Yarn manifests/lockfiles
+    directory: "/"
+    schedule: { interval: "weekly" }
+  - package-ecosystem: "bun"
+    directory: "/"
+    schedule: { interval: "weekly" }
+  - package-ecosystem: "pip" # pip, Poetry, pipenv and uv may use this ecosystem where supported
+    directory: "/"
+    schedule: { interval: "weekly" }
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule: { interval: "weekly" }
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule: { interval: "weekly" }
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule: { interval: "weekly" }
+  - package-ecosystem: "rust-toolchain"
+    directory: "/"
+    schedule: { interval: "weekly" }
+  - package-ecosystem: "bundler"
+    directory: "/"
+    schedule: { interval: "weekly" }
+  - package-ecosystem: "maven"
+    directory: "/"
+    schedule: { interval: "weekly" }
+  - package-ecosystem: "gradle"
+    directory: "/"
+    schedule: { interval: "weekly" }
+  - package-ecosystem: "nuget"
+    directory: "/"
+    schedule: { interval: "weekly" }
+  - package-ecosystem: "composer"
+    directory: "/"
+    schedule: { interval: "weekly" }
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule: { interval: "weekly" }
+  - package-ecosystem: "docker-compose"
+    directory: "/"
+    schedule: { interval: "weekly" }
+  - package-ecosystem: "devcontainers"
+    directory: "/"
+    schedule: { interval: "weekly" }
+  - package-ecosystem: "terraform"
+    directory: "/"
+    schedule: { interval: "weekly" }
+  - package-ecosystem: "opentofu"
+    directory: "/"
+    schedule: { interval: "weekly" }
+  - package-ecosystem: "helm"
+    directory: "/"
+    schedule: { interval: "weekly" }
+  - package-ecosystem: "gitsubmodule"
+    directory: "/"
+    schedule: { interval: "weekly" }
+  - package-ecosystem: "pub"
+    directory: "/"
+    schedule: { interval: "weekly" }
+  - package-ecosystem: "mix"
+    directory: "/"
+    schedule: { interval: "weekly" }
+  - package-ecosystem: "swift"
+    directory: "/"
+    schedule: { interval: "weekly" }
+  - package-ecosystem: "pre-commit"
+    directory: "/"
+    schedule: { interval: "weekly" }
+  - package-ecosystem: "sbt"
+    directory: "/"
+    schedule: { interval: "weekly" }
+  - package-ecosystem: "deno"
+    directory: "/"
+    schedule: { interval: "weekly" }
+  - package-ecosystem: "julia"
+    directory: "/"
+    schedule: { interval: "weekly" }
+  - package-ecosystem: "nix"
+    directory: "/"
+    schedule: { interval: "weekly" }
+  - package-ecosystem: "bazel"
+    directory: "/"
+    schedule: { interval: "weekly" }

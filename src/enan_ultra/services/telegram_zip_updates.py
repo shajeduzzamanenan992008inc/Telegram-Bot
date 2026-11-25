@@ -149,9 +149,7 @@ class TelegramZipUpdateManager:
         )
         self.admin_chat_id = settings.admin_chat_id
         self.deployment_enabled = bool(getattr(settings, "update_deployment_enabled", False))
-        self.deployment_socket_path = Path(getattr(
-            settings, "update_deployment_socket_path", "/run/telegram-ai-deploy.sock",
-        ))
+        self.deployment_socket_path = Path(getattr(settings, "update_deployment_socket_path"))
         self.upload_sessions: dict[int, UploadSession] = {}
         self.updates: dict[str, StagedUpdate] = {}
         self._lock = RLock()

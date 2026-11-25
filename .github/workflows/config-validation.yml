@@ -1,0 +1,46 @@
+name: GitHub Configuration Validation
+
+on:
+  push:
+    paths:
+      - "GUARDIAN-X/.github/**"
+      - "GUARDIAN-X/devkit/agents/**"
+      - "GUARDIAN-X/devkit/health/**"
+      - "GUARDIAN-X/link/templates/**"
+      - "GUARDIAN-X/_dev/tools/**"
+      - "GUARDIAN-X/SECURITY.md"
+  pull_request:
+    paths:
+      - "GUARDIAN-X/.github/**"
+      - "GUARDIAN-X/devkit/agents/**"
+      - "GUARDIAN-X/devkit/health/**"
+      - "GUARDIAN-X/link/templates/**"
+      - "GUARDIAN-X/_dev/tools/**"
+      - "GUARDIAN-X/SECURITY.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-config-validation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate YAML, JSON, Copilot frontmatter, and workflow safety
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: GUARDIAN-X
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Validate GitHub configuration
+        run: ruby _dev/tools/validate_config.rb

@@ -1,0 +1,215 @@
+name: OGX CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ogx-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  tests:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    defaults:
+      run:
+        working-directory: GUARDIAN-X
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install test tooling
+        run: python -m pip install --disable-pip-version-check pytest
+
+      - name: Compile canonical source, drop-in and tests
+        run: python -m compileall -q src core tests _dev/tests
+
+      - name: Canonical source tests
+        run: python -m pytest -q
+
+      - name: Drop-in distribution tests (fails on zero collection)
+        env:
+          PYTHONPATH: core
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import subprocess
+          import sys
+
+          result = subprocess.run(
+              [sys.executable, "-m", "unittest", "discover", "-s", "_dev/tests"],
+              capture_output=True,
+              text=True,
+              env=os.environ,
+          )
+          sys.stdout.write(result.stdout)
+          sys.stderr.write(result.stderr)
+          match = re.search(r"^Ran (\d+) test", result.stderr, re.MULTILINE)
+          if not match:
+              print("ERROR: unittest reported no test count", file=sys.stderr)
+              sys.exit(1)
+          count = int(match.group(1))
+          print(f"drop-in tests collected: {count}")
+          if count == 0:
+              print("ERROR: zero tests collected", file=sys.stderr)
+              sys.exit(1)
+          sys.exit(result.returncode)
+          PY
+
+      - name: Distribution and version consistency
+        run: python _dev/tools/sync_core_from_src.py --check
+
+  profile-checks:
+    name: Profile-configured project checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: GUARDIAN-X
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Run devkit/health/run_project_checks.py
+        env:
+          OMEGA_PROFILE: _dev/project-profile.json
+        run: python devkit/health/run_project_checks.py
+
+  packaging:
+    name: Wheel build and clean install
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: GUARDIAN-X
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Build wheel
+        run: python -m pip wheel . --no-deps --wheel-dir "$RUNNER_TEMP/wheel"
+
+      - name: Inspect wheel and install into a clean environment
+        run: |
+          python - <<'PY'
+          import glob
+          import os
+          import sys
+          import zipfile
+
+          wheels = glob.glob(os.path.join(os.environ["RUNNER_TEMP"], "wheel", "*.whl"))
+          if len(wheels) != 1:
+              print(f"ERROR: expected one wheel, found {wheels}", file=sys.stderr)
+              sys.exit(1)
+          with zipfile.ZipFile(wheels[0]) as archive:
+              names = archive.namelist()
+          forbidden = ("tests/", "_dev/", ".github/", "core/", "src/", "__pycache__", ".pytest_cache/", ".env")
+          bad = [name for name in names if any(token in name for token in forbidden)]
+          if bad:
+              print(f"ERROR: development files in wheel: {bad[:10]}", file=sys.stderr)
+              sys.exit(1)
+          if "ogx/cli.py" not in names or "ogx/__init__.py" not in names:
+              print("ERROR: wheel is missing the ogx package", file=sys.stderr)
+              sys.exit(1)
+          if not any(name.endswith(".dist-info/entry_points.txt") for name in names):
+              print("ERROR: wheel is missing console entry points", file=sys.stderr)
+              sys.exit(1)
+          print(f"wheel={wheels[0]} files={len(names)}")
+          PY
+          python -m venv "$RUNNER_TEMP/ogx-venv"
+          "$RUNNER_TEMP/ogx-venv/bin/python" -m pip install --disable-pip-version-check --no-deps "$RUNNER_TEMP"/wheel/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/ogx-venv/bin/python" -c "import ogx; print('import', ogx.__version__)"
+          "$RUNNER_TEMP/ogx-venv/bin/ogx" --version
+          "$RUNNER_TEMP/ogx-venv/bin/ogx" --help > /dev/null
+          "$RUNNER_TEMP/ogx-venv/bin/ogx" providers list > /dev/null
+          "$RUNNER_TEMP/ogx-venv/bin/ogx" platform status > /dev/null
+
+  drop-in:
+    name: Drop-in distribution
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: GUARDIAN-X
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Drop-in import and entry point
+        run: |
+          PYTHONPATH=core python -m ogx --version
+          python init.py status > /dev/null
+
+      - name: Build drop-in zip and inspect shipped files
+        run: |
+          python _dev/tools/make_dist.py "$RUNNER_TEMP/dropin.zip"
+          python - <<'PY'
+          import os
+          import sys
+          import zipfile
+
+          with zipfile.ZipFile(os.path.join(os.environ["RUNNER_TEMP"], "dropin.zip")) as archive:
+              names = archive.namelist()
+          forbidden = ("/tests/", "/_dev/", "/.github/", "/release/", "/src/", "__pycache__", "/results.txt")
+          bad = [name for name in names if any(token in name for token in forbidden)]
+          if bad:
+              print(f"ERROR: forbidden files in drop-in: {bad[:10]}", file=sys.stderr)
+              sys.exit(1)
+          required = ("omega-shield/init.py", "omega-shield/core/ogx/__init__.py")
+          missing = [name for name in required if name not in names]
+          if missing:
+              print(f"ERROR: drop-in is missing {missing}", file=sys.stderr)
+              sys.exit(1)
+          print(f"drop-in files={len(names)}")
+          PY

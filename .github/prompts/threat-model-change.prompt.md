@@ -1,0 +1,3 @@
+Threat-model the requested change using the real repository implementation. Begin read-only and follow `.github/copilot-instructions.md`.
+
+Identify assets, actors, entry points, trust boundaries, data classification, privileged actions, dependencies, and abuse cases. Consider broken access control, injection, SSRF, XSS, CSRF, replay, file handling, supply chain, privacy, AI/tool injection, and denial of service where relevant. Separate confirmed issues from plausible risks and unknowns. Give severity, confidence, preconditions, evidence paths, mitigations, regression tests, and residual risk. Do not exploit production or scan outside the authorized scope.

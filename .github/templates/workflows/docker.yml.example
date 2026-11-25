@@ -1,0 +1,15 @@
+# EXAMPLE ONLY. Review build context, base-image trust, provenance and registry permissions.
+# Do not add registry secrets to pull_request workflows.
+name: Container build (example)
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@<VERIFIED_40_CHARACTER_COMMIT_SHA>
+        with:
+          persist-credentials: false
+      - name: Build container without publishing
+        run: docker build --pull --tag local/project:${{ github.sha }} .

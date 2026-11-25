@@ -1,0 +1,16 @@
+# Support
+
+## Supported releases
+
+List maintained versions and end-of-life dates here: **[SUPPORTED RELEASES]**.
+
+## Where to get help
+
+- Usage questions: **[DISCUSSION / SUPPORT URL]**
+- Bugs: **[ISSUE TRACKER URL]**
+- Security vulnerabilities: follow `SECURITY.md`; do not post public reports.
+- Commercial support: **[SUPPORT CONTACT / SERVICE TERMS]**
+
+## What to include
+
+Provide version/commit, supported runtime/platform, minimal reproduction, sanitized logs, and expected vs actual behavior. Remove passwords, keys, access tokens, customer information, and other secrets.

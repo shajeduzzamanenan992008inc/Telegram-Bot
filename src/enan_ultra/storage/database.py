@@ -765,6 +765,23 @@ class Database:
             "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(16, ?)",
             (utc_now().isoformat(),),
         )
+        # Migration 17: Global access mode table (Private/Public mode)
+        await db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS global_access_mode (
+                id INTEGER PRIMARY KEY CHECK(id = 1),
+                mode TEXT NOT NULL CHECK(mode IN ('private','public')),
+                updated_by INTEGER,
+                updated_at TEXT NOT NULL
+            );
+            INSERT OR IGNORE INTO global_access_mode(id, mode, updated_by, updated_at)
+            VALUES(1, 'private', 0, ?);
+            """
+        )
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(17, ?)",
+            (utc_now().isoformat(),),
+        )
         await db.commit()
 
     async def _update_upload_gate_connection(self) -> aiosqlite.Connection:
@@ -1093,14 +1110,14 @@ class Database:
         if user_id <= 0:
             raise ValueError("A positive private-chat user ID is required")
         try:
-            await self._db().executescript(
-                "BEGIN IMMEDIATE;\n"
-                f"DELETE FROM messages WHERE chat_id={user_id};\n"
-                f"DELETE FROM memories WHERE user_id={user_id};\n"
-                f"DELETE FROM user_memories WHERE user_id={user_id};\n"
-                f"DELETE FROM learned_knowledge WHERE user_id={user_id} OR source_user_id={user_id};\n"
-                "COMMIT;"
+            await self._db().execute("BEGIN IMMEDIATE;")
+            await self._db().execute("DELETE FROM messages WHERE chat_id=?", (user_id,))
+            await self._db().execute("DELETE FROM memories WHERE user_id=?", (user_id,))
+            await self._db().execute("DELETE FROM user_memories WHERE user_id=?", (user_id,))
+            await self._db().execute(
+                "DELETE FROM learned_knowledge WHERE user_id=? OR source_user_id=?", (user_id, user_id)
             )
+            await self._db().execute("COMMIT;")
         except Exception:
             await self._db().rollback()
             raise
@@ -1300,57 +1317,51 @@ class Database:
         """Delete user-owned state atomically; shared group-chat history is never removed."""
         db = self._db()
         user_id = int(user_id)
-        statements = [
-            "BEGIN IMMEDIATE;",
-            *(
-                f"DELETE FROM {table} WHERE user_id={user_id};"
-                for table in (
-                    "user_preferences", "memories", "user_memories", "reminders", "user_tasks", "usage_events",
-                    "study_cards", "feedback", "agent_jobs", "kb_documents",
+        try:
+            await db.execute("BEGIN IMMEDIATE;")
+            for table in (
+                "user_preferences", "memories", "user_memories", "reminders", "user_tasks", "usage_events",
+                "study_cards", "feedback", "agent_jobs", "kb_documents",
+            ):
+                await db.execute(f"DELETE FROM {table} WHERE user_id=?", (user_id,))
+            await db.execute("DELETE FROM missions WHERE owner_id=?", (user_id,))
+            await db.execute("DELETE FROM evolution_proposals WHERE creator_id=?", (user_id,))
+            await db.execute(
+                "DELETE FROM learned_knowledge WHERE user_id=? OR source_user_id=?", (user_id, user_id)
+            )
+            await db.execute("DELETE FROM approvals WHERE requester_id=?", (user_id,))
+            await db.execute("DELETE FROM live_sessions WHERE user_id=?", (user_id,))
+            await db.execute("DELETE FROM audit_events WHERE actor_id=?", (user_id,))
+            await db.execute("DELETE FROM sticker_user_usage WHERE user_id=?", (user_id,))
+            await db.execute("UPDATE sticker_registry SET added_by=0 WHERE added_by=?", (user_id,))
+            if private_chat_id == user_id:
+                chat_id = int(private_chat_id)
+                await db.execute("DELETE FROM messages WHERE chat_id=?", (chat_id,))
+                await db.execute("DELETE FROM documents WHERE chat_id=?", (chat_id,))
+                await db.execute("DELETE FROM action_executions WHERE chat_id=?", (chat_id,))
+                await db.execute("DELETE FROM admin_reply_map WHERE user_chat_id=?", (chat_id,))
+            cursor = await db.execute(
+                "SELECT id,actor_id,action,target,outcome,created_at "
+                "FROM audit_events ORDER BY id",
+            )
+            rows = await cursor.fetchall()
+            await cursor.close()
+            previous_hash = _AUDIT_CHAIN_GENESIS
+            for row in rows:
+                event_hash = _audit_event_hash(
+                    int(row["id"]), int(row["actor_id"]), str(row["action"]),
+                    str(row["target"]), str(row["outcome"]), str(row["created_at"]),
+                    previous_hash,
                 )
-            ),
-            f"DELETE FROM missions WHERE owner_id={user_id};",
-            f"DELETE FROM evolution_proposals WHERE creator_id={user_id};",
-            f"DELETE FROM learned_knowledge WHERE user_id={user_id} OR source_user_id={user_id};",
-            f"DELETE FROM approvals WHERE requester_id={user_id};",
-            f"DELETE FROM live_sessions WHERE user_id={user_id};",
-            f"DELETE FROM audit_events WHERE actor_id={user_id};",
-            f"DELETE FROM sticker_user_usage WHERE user_id={user_id};",
-            f"UPDATE sticker_registry SET added_by=0 WHERE added_by={user_id};",
-        ]
-        if private_chat_id == user_id:
-            chat_id = int(private_chat_id)
-            statements.extend((
-                f"DELETE FROM messages WHERE chat_id={chat_id};",
-                f"DELETE FROM documents WHERE chat_id={chat_id};",
-                f"DELETE FROM action_executions WHERE chat_id={chat_id};",
-                f"DELETE FROM admin_reply_map WHERE user_chat_id={chat_id};",
-            ))
-        async with self._audit_lock:
-            try:
-                await db.executescript("\n".join(statements))
-                cursor = await db.execute(
-                    "SELECT id,actor_id,action,target,outcome,created_at "
-                    "FROM audit_events ORDER BY id",
+                await db.execute(
+                    "UPDATE audit_events SET previous_hash=?,event_hash=? WHERE id=?",
+                    (previous_hash, event_hash, int(row["id"])),
                 )
-                rows = await cursor.fetchall()
-                await cursor.close()
-                previous_hash = _AUDIT_CHAIN_GENESIS
-                for row in rows:
-                    event_hash = _audit_event_hash(
-                        int(row["id"]), int(row["actor_id"]), str(row["action"]),
-                        str(row["target"]), str(row["outcome"]), str(row["created_at"]),
-                        previous_hash,
-                    )
-                    await db.execute(
-                        "UPDATE audit_events SET previous_hash=?,event_hash=? WHERE id=?",
-                        (previous_hash, event_hash, int(row["id"])),
-                    )
-                    previous_hash = event_hash
-                await db.commit()
-            except BaseException:
-                await db.rollback()
-                raise
+                previous_hash = event_hash
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
 
     async def set_user_blocked(self, user_id: int, blocked_by: int, reason: str = "") -> None:
         await self._db().execute(
@@ -1382,6 +1393,24 @@ class Database:
         row = await cursor.fetchone()
         await cursor.close()
         return row["value"] if row else None
+
+    async def get_global_access_mode(self) -> str:
+        """Get the current global access mode ('private' or 'public'). Defaults to 'private'."""
+        cursor = await self._db().execute("SELECT mode FROM global_access_mode WHERE id=1")
+        row = await cursor.fetchone()
+        await cursor.close()
+        return str(row["mode"]) if row else "private"
+
+    async def set_global_access_mode(self, mode: str, updated_by: int) -> None:
+        """Set the global access mode atomically. mode must be 'private' or 'public'."""
+        if mode not in ("private", "public"):
+            raise ValueError("Global access mode must be 'private' or 'public'")
+        await self._db().execute(
+            "UPDATE global_access_mode SET mode=?, updated_by=?, updated_at=? WHERE id=1",
+            (mode, updated_by, utc_now().isoformat()),
+        )
+        await self._db().commit()
+        await self.audit(updated_by, "global_access_mode.change", mode, f"changed by admin {updated_by}")
 
     async def set_setting(self, key: str, value: str) -> None:
         await self._db().execute(

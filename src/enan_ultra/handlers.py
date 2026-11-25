@@ -32,6 +32,7 @@ from telegram.ext import (
     TypeHandler, filters,
 )
 
+from enan_ultra.access_control import AccessControlService, AccessDeniedError
 from enan_ultra.actions import ActionContext, ActionRegistry
 from enan_ultra.config import Settings
 from enan_ultra.files.registry import FileRegistry
@@ -88,6 +89,8 @@ USER_FACT_PATTERNS = (
 )
 
 
+from enan_ultra.access_control import AccessControlService, AccessDeniedError
+
 class BotHandlers:
     def __init__(
         self, settings: Settings, db: Database, router: ProviderRouter, files: FileRegistry,
@@ -121,6 +124,7 @@ class BotHandlers:
         self._malware_alert_last_sent = 0.0
         self._update_lock = asyncio.Lock()
         self.update_manager: TelegramZipUpdateManager | None = None
+        self.access_control = AccessControlService(settings, db)
         database_path = getattr(settings, "database_path", None)
         if (
             database_path and hasattr(settings, "admin_chat_id")
@@ -158,6 +162,7 @@ class BotHandlers:
             "forget_files": self.forget_files, "web": self.web,
             "image": self.imagine, "imagine": self.imagine,
             "usage": self.usage, "remind": self.remind, "reminders": self.reminders,
+            "setmode": self.set_global_mode,
             "cancelreminder": self.cancel_reminder, "model": self.model,
             "snooze": self.snooze_reminder,
             "search": self.live_search, "research": self.live_search,
@@ -231,6 +236,9 @@ class BotHandlers:
         if not allow_blocked and await self.db.is_user_blocked(user.id):
             return False
         if update.effective_chat and update.effective_chat.id == self.settings.admin_chat_id and not is_admin(self.settings, user.id):
+            return False
+        # Enforce global Private/Public mode
+        if not await self.access_control.enforce_private_mode_for_update(update):
             return False
         if not is_authorized(self.settings, user.id):
             await msg.reply_text("You are not authorized to use this bot.")
@@ -1145,6 +1153,44 @@ class BotHandlers:
             await self.db.set_chat_mode(chat.id, selected)
         current = await self.db.get_chat_mode(chat.id)
         await update.effective_message.reply_text(f"Active chat mode: {current}")
+
+    async def set_global_mode(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Admin command to switch global Private/Public mode."""
+        if not await self._gate(update, admin=True):
+            return
+        if not context.args or len(context.args) != 1:
+            await update.effective_message.reply_text(
+                "Usage: /setmode private|public"
+            )
+            return
+        selected = context.args[0].lower()
+        if selected not in {"private", "public"}:
+            await update.effective_message.reply_text(
+                "Invalid mode. Use /setmode private or /setmode public"
+            )
+            return
+        # Verify administrator identity
+        user_id = update.effective_user.id
+        if not is_admin(self.settings, user_id):
+            await update.effective_message.reply_text(
+                "Only administrators can change the global access mode."
+            )
+            return
+        # Enforce Private Mode check first to ensure we have access control
+        await self.access_control.require_access(user_id)
+        # Set the global mode atomically
+        await self.db.set_global_access_mode(selected, user_id)
+        new_mode = "private" if selected == "private" else "public"
+        mode_label = "🔒 PRIVATE" if selected == "private" else "🌐 PUBLIC"
+        await update.effective_message.reply_text(
+            f"✅ Global access mode switched to {mode_label}.\n"
+            f"The change has been recorded by administrator {user_id}."
+        )
+        # Audit the mode change
+        await self.db.audit(
+            user_id, "global_access_mode.change", selected,
+            f"global access mode changed to {new_mode}"
+        )
 
     async def summary(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._gate(update):
@@ -3231,8 +3277,13 @@ class BotHandlers:
     async def admin_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._gate(update, admin=True):
             return
+        current_mode = await self.access_control.is_private_mode()
+        mode_label = "🔒 PRIVATE" if current_mode else "🌐 PUBLIC"
         await update.effective_message.reply_text(
             "🛡️ ADMIN CENTER\n\n"
+            f"Global mode: {mode_label}\n\n"
+            "/setmode private — switch to Private Mode (admins only)\n"
+            "/setmode public — switch to Public Mode (ordinary users restored)\n"
             "/status — bot status\n"
             "/providers — configured provider health\n"
             "/providerdiag — circuit and credential health (no key values)\n"
@@ -3244,6 +3295,7 @@ class BotHandlers:
             "/update — stage and review an admin ZIP package\n"
             "/models and /model — model catalog and selection\n"
             "/vm status|logs|restart — service control\n"
+            "/setmode private|public — switch global access mode (admins only)\n"
             "Reply to a support request in this chat to send a formatted response."
         )
 

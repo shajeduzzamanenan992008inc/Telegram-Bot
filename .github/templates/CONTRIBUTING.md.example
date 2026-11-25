@@ -1,0 +1,29 @@
+# Contributing
+
+Thank you for contributing to this project.
+
+## Before opening a change
+
+- Read the repository instructions and project profile.
+- Check existing issues, roadmap, contribution rules, and code ownership.
+- Discuss significant architecture or compatibility changes before implementation.
+- Never include secrets, private customer data, or proprietary third-party assets.
+
+## Development setup
+
+Document supported operating systems, runtimes, dependency installation, environment configuration, local services, and test data here: **[PROJECT SETUP]**.
+
+## Engineering expectations
+
+- Follow established architecture, formatting, linting, and naming conventions.
+- Keep pull requests focused and include tests for changed behavior.
+- Update API, user, operational, and migration documentation where relevant.
+- Consider accessibility, security, privacy, performance, and failure behavior.
+
+## Pull requests
+
+Use the repository pull-request template. Include rationale, scope, tests actually run, risk, migrations, rollout, rollback, and evidence. Do not claim checks that did not run.
+
+## Review and merge
+
+Document the required approvals, status checks, branch strategy, commit/signing policy, and release process here: **[REVIEW AND MERGE POLICY]**.
