@@ -4,7 +4,7 @@
 
 ### Code Quality (verified 2026-11-25)
 
-- [x] Full pytest suite passes — 322 tests
+- [x] Full pytest suite passes — 342 tests on each of Python 3.11, 3.12, 3.13, 3.14, 3.15
 - [x] Ruff (`E4,E7,E9,F`) clean across `src`, `tests`, `scripts`
 - [x] Python compile check passes
 - [x] JavaScript syntax check passes
@@ -19,7 +19,7 @@
 - [x] Fail-closed behavior when the persisted mode cannot be read
 - [x] Global mode row seeded/upserted correctly (migration 17)
 - [x] `/setmode` command collision removed
-- [x] Mode-specific regression tests (27) pass
+- [x] Mode-specific regression tests (29) pass
 - [x] Dependency audit (`pip-audit`) — no known vulnerabilities
 - [x] Branch protection on `main`: strict required checks, 1 reviewer approval,
       force-push and deletion protection (verified via API)
@@ -47,7 +47,7 @@
 
 - [x] `ci.yml` targets this repository (Python 3.11–3.15 matrix, pytest, ruff,
       compile, JS, dependency audit, wheel, Mini App assets, config validation)
-- [x] `config-validation.yml` validates this repository's YAML/JSON/settings
+- [x] `ci.yml` config-validation job validates this repository's YAML/JSON/settings
 - [x] `security.yml` CodeQL configuration retained
 - [x] `dependency-review.yml` retained
 - [ ] Workflows executed successfully on GitHub — **blocked**: every job at

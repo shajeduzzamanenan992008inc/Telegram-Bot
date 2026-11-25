@@ -87,16 +87,16 @@ vulnerabilities.
 
 | Check | Result |
 | --- | --- |
-| Full pytest suite | 322 passed, 0 failed |
+| Full pytest suite | 342 passed, 0 failed |
 | Restored `test_final_upgrade.py` | 45 passed |
-| Mode tests (`test_private_public_mode.py`, `test_private_public_enforcement.py`) | 27 passed |
+| Mode tests (`test_private_public_mode.py`, `test_private_public_enforcement.py`) | 29 passed |
 | Ruff `E4,E7,E9,F` | clean |
 | `compileall` (src, tests, scripts) | clean |
 | Node syntax + tests | clean (3 tests) |
 | Wheel build | 62 files, assets verified |
 | Config validation | passed (138 documented keys) |
 | Dependency audit | no known vulnerabilities |
-| Python 3.11 pytest | 322 passed |
+| Python 3.11 pytest | 342 passed |
 | Workflow/JSON YAML parse | passed |
 
 ## CI workflow repair
@@ -104,11 +104,18 @@ vulnerabilities.
 `ci.yml` was an OGX pipeline expecting `GUARDIAN-X/` and an `ogx` package. It now
 covers this repository: Python 3.11–3.15 pytest matrix, ruff, compile checks,
 JavaScript syntax/tests, dependency audit, wheel build, Mini App asset
-verification, and configuration validation. `config-validation.yml` now validates
-this repository's workflows/JSON/settings. CodeQL and dependency review remain
-configured. Workflows have **not** been executed on GitHub from this workspace.
+verification, and configuration validation (including workflow/JSON parsing).
+The former duplicate `tests.yml` and `config-validation.yml` workflows were
+consolidated into `ci.yml`. CodeQL and dependency review remain configured.
+Workflows have **not** been executed on GitHub from this workspace.
 
-## GitHub settings (verified via API)
+## GitHub settings (verified via API in an earlier session)
+
+> Re-verification in the current session was **UNVERIFIED**: unauthenticated
+> requests to `api.github.com` return `401` for branch protection and `404` for
+the repository, so no live protection, alert, or Actions state could be read.
+> The statements below are historical and must be re-checked with an
+authenticated token.
 
 - Branch protection on `main` is now active: strict required checks
   (10 contexts), 1 approving review, force pushes and branch deletion disabled.
@@ -132,8 +139,8 @@ configured. Workflows have **not** been executed on GitHub from this workspace.
 
 ## Status
 
-**BLOCKED** — all reproducible code defects are fixed and verified locally (322
-tests on Python 3.11 and 3.15, clean static analysis, clean dependency audit,
+**BLOCKED** — all reproducible code defects are fixed and verified locally (342
+tests on Python 3.11 through 3.15, clean static analysis, clean dependency audit,
 wheel and assets verified), and branch protection is active. Priority 1 cannot
 be closed because GitHub Actions jobs are refused before execution by the
 account's failed payment/spending limit; CodeQL and CI cannot go green until the

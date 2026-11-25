@@ -34,7 +34,7 @@ Theme, multimodal routing, voice, document processing, personal KB, research, pr
 
 ## Local setup
 
-Python 3.11–3.15 এবং `uv` ব্যবহার করুন (Python 3.11 সর্বনিম্ন সমর্থিত সংস্করণ)।
+Python 3.11.5–3.15 এবং `uv` ব্যবহার করুন (Python 3.11-এর সর্বনিম্ন সমর্থিত patch release 3.11.5; SoupSieve 4.x-এর জন্য এটি আবশ্যক)।
 
 ```powershell
 python scripts/init_env.py
@@ -135,7 +135,7 @@ Checkout Azure Ubuntu VM-এ নিয়ে চালান:
 sudo bash deploy/install_ubuntu.sh
 ```
 
-Installer default-এ Python 3.11 ইনস্টল করে (সমর্থিত range 3.11–3.15); অন্য supported version বেছে নিতে `PYTHON_VERSION=3.14 sudo -E bash deploy/install_ubuntu.sh` ব্যবহার করুন। Installer locked dependencies, `ffmpeg`, Poppler, Bengali/English Tesseract, Noto Bengali font, non-root service account ও hardened systemd unit সেট করে। `/etc/telegram-ai/bot.env` root-owned mode `0600` হয়; প্রথমবার secrets generate করে, পরেরবার সেগুলো অক্ষত রাখে এবং পুরনো env file-এ নতুন config keys যোগ করে। Credentials বসিয়ে installer আবার চালান।
+Installer default-এ Python 3.11 ইনস্টল করে (সমর্থিত range 3.11.5–3.15); অন্য supported version বেছে নিতে `PYTHON_VERSION=3.14 sudo -E bash deploy/install_ubuntu.sh` ব্যবহার করুন। Installer locked dependencies, `ffmpeg`, Poppler, Bengali/English Tesseract, Noto Bengali font, non-root service account ও hardened systemd unit সেট করে। `/etc/telegram-ai/bot.env` root-owned mode `0600` হয়; প্রথমবার secrets generate করে, পরেরবার সেগুলো অক্ষত রাখে এবং পুরনো env file-এ নতুন config keys যোগ করে। Credentials বসিয়ে installer আবার চালান।
 
 ```sh
 sudoedit /etc/telegram-ai/bot.env
@@ -150,11 +150,11 @@ sudo journalctl -u telegram-ai -f
 
 ```sh
 uv lock
-uv export --locked --format requirements.txt --no-dev --group build --output-file requirements.txt
+uv export --locked --format requirements.txt --no-dev --group build --no-emit-project --output-file requirements.txt
 uv run --locked --group test pytest
 ```
 
-CI-তে 3.11–3.15 Python test matrix-এর সঙ্গে correctness lint, Python compile, Mini App JavaScript syntax, wheel build এবং packaged web/theme asset check চলে। Tests provider fallback, local-only routing, encrypted KB isolation, approval authorization/expiry, per-message one-shot tool action, usage caps, image pixel limit, archive traversal/bounds, deployment-secret generation ও config behavior কভার করে। Real Telegram/provider/HA credential এবং rootless Docker daemon ছাড়া external integration smoke test সম্পন্ন হয় না।
+CI-তে 3.11–3.15 Python test matrix-এর সঙ্গে correctness lint, Python compile, Mini App JavaScript syntax, wheel build, packaged web/theme asset check, committed `requirements.txt` export consistency এবং pip-audit চলে। Tests provider fallback, local-only routing, encrypted KB isolation, approval authorization/expiry, per-message one-shot tool action, usage caps, image pixel limit, archive traversal/bounds, deployment-secret generation ও config behavior কভার করে। Real Telegram/provider/HA credential এবং rootless Docker daemon ছাড়া external integration smoke test সম্পন্ন হয় না।
 
 ## Architecture
 

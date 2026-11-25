@@ -1,25 +1,27 @@
 # Backup and Restore — Telegram-Bot
 
 ## Overview
-The database supports two backup modes: plain (unencrypted) and encrypted. Both produce consistent SQLite snapshots using the online backup API, preserving WAL mode and all constraints.
+The CLI produces encrypted snapshots only. Both the CLI and the programmatic
+helpers build a consistent SQLite snapshot with the online backup API, so WAL
+content is included and writers are not blocked. `PRAGMA integrity_check` runs
+on every snapshot before it is written or restored.
 
 ## Backup Methods
 
-### 1. Plain Backup (CLI)
+### 1. Encrypted Backup (CLI — supported operator path)
 ```bash
-python -m scripts.database_backup /path/to/backup.sqlite3
+uv run --locked python scripts/database_backup.py backup /path/to/backup.sqlite3.enc
 ```
-- Fast, no encryption
-- Suitable for same-machine restore or trusted environments
-- Integrity verified after copy
+- Requires `APP_DATA_KEY` (at least 32 characters), read from the environment or
+  `/etc/telegram-ai/bot.env`
+- Fernet authenticated encryption (AES-128-CBC with HMAC-SHA256) via `cryptography`
+- Atomic write with temp file + fsync + rename; parent directory is created mode `0700`
+- Plaintext never persists outside a private temporary directory
 
-### 2. Encrypted Backup (CLI)
-```bash
-python -m scripts.database_backup /path/to/backup.sqlite3.enc --encrypted
-```
-- Requires `APP_DATA_KEY` configured
-- AES-GCM encryption via `cryptography.Fernet`
-- Atomic write with temp file + fsync + rename
+### 2. Plain Backup (programmatic only)
+The CLI has no unencrypted mode; `database_backup.py restore` also refuses a
+plaintext source unless `--allow-unencrypted` is passed explicitly. For a
+trusted same-machine copy use `Database.backup_to()` directly.
 
 ### 3. Programmatic (Python)
 ```python
@@ -42,27 +44,28 @@ await db.backup_encrypted_to(Path("backup.sqlite3.enc"))
 sudo systemctl stop telegram-ai
 ```
 
-### 2. Verify Backup
+### 2. Restore to a Non-Live Path and Verify
 ```bash
-# Plain
-sqlite3 backup.sqlite3 "PRAGMA integrity_check"
-
-# Encrypted (verify via restore test)
-python -c "
-from enan_ultra.crypto import DataCipher
-from enan_ultra.config import Settings
-s = Settings.load()  # Must have same APP_DATA_KEY
-cipher = DataCipher(s.app_data_key)
-plaintext = cipher.decrypt(open('backup.sqlite3.enc', 'rb').read())
-open('test_restore.sqlite3', 'wb').write(plaintext)
-"
-sqlite3 test_restore.sqlite3 "PRAGMA integrity_check"
+# Decrypts into a private temp file, checks SQLite integrity, then copies.
+uv run --locked python scripts/database_backup.py restore \
+  /path/to/backup.sqlite3.enc --to /tmp/restore-check.sqlite3
+sqlite3 /tmp/restore-check.sqlite3 "PRAGMA integrity_check"
 ```
+A wrong `APP_DATA_KEY`, a corrupt file, or a plaintext source (without
+`--allow-unencrypted`) exits non-zero without writing the destination.
 
-### 3. Replace Database
+### 3. Replace the Live Database
 ```bash
-cp backup.sqlite3 /var/lib/telegram-ai/telegram_ai.sqlite3
-# Ensure permissions
+# The script refuses while telegram-ai.service is active.
+uv run --locked python scripts/database_backup.py restore \
+  /path/to/backup.sqlite3.enc \
+  --to /var/lib/telegram-ai/telegram_ai.sqlite3 --replace
+```
+`--replace` preserves the current database as
+`<name>.pre-restore-<UTC-timestamp>` before swapping it in, and removes stale
+`-wal`/`-shm` files for the live path. Otherwise copy the verified snapshot
+manually and fix ownership:
+```bash
 chown enan-ultra:enan-ultra /var/lib/telegram-ai/telegram_ai.sqlite3
 chmod 600 /var/lib/telegram-ai/telegram_ai.sqlite3
 ```
@@ -83,7 +86,7 @@ sudo systemctl start telegram-ai
 #!/bin/bash
 set -e
 DEST="/var/backups/telegram-ai/$(date +%F).sqlite3.enc"
-/opt/enan-ultra/.venv/bin/python -m scripts.database_backup "$DEST" --encrypted
+/opt/enan-ultra/.venv/bin/python /opt/enan-ultra/scripts/database_backup.py backup "$DEST"
 # Keep last 30 days
 find /var/backups/telegram-ai -name '*.sqlite3.enc' -mtime +30 -delete
 ```

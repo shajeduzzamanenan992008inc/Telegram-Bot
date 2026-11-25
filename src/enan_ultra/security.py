@@ -13,6 +13,7 @@ from urllib.parse import quote, urlsplit
 
 _CONNECTION_TIMEOUT_SECONDS = 10.0
 _TOTAL_DOWNLOAD_TIMEOUT_SECONDS = 35.0
+_TOTAL_DOCUMENT_TIMEOUT_SECONDS = 20.0
 _CHUNK_SIZE = 64 * 1024
 
 _AddressInfo = tuple[int, int, int, str, tuple[Any, ...]]
@@ -180,10 +181,80 @@ def _download_public_https_image(
         connection.close()
 
 
+def _download_public_https_document(
+    url: str, max_bytes: int, timeout_seconds: float,
+) -> tuple[bytes, str]:
+    """Fetch an HTML document through the same validated, pinned connection path."""
+    host, request_target, host_header, addresses = _resolve_public_https_target(url)
+    connection = _PinnedHTTPSConnection(host, addresses, timeout_seconds)
+    try:
+        connection.request(
+            "GET", request_target,
+            headers={
+                "Host": host_header, "Accept": "text/html,application/xhtml+xml",
+                "Accept-Encoding": "identity", "Connection": "close",
+            },
+        )
+        response = connection.getresponse()
+        if 300 <= response.status < 400:
+            raise ValueError("Redirects are not followed for webpage reading")
+        if response.status != 200:
+            raise ValueError("The webpage host returned an unsuccessful status")
+        media_type = (response.getheader("Content-Type", "") or "").split(";", 1)[0].strip().lower()
+        if media_type not in {"text/html", "application/xhtml+xml"}:
+            raise ValueError("The URL did not return an HTML page")
+        if (response.getheader("Content-Encoding", "identity") or "identity").lower() not in {
+            "", "identity",
+        }:
+            raise ValueError("The webpage returned an unsupported content encoding")
+        expected_length = response.length
+        if expected_length is not None and expected_length > max_bytes:
+            raise ValueError("The webpage is larger than the 2 MiB reading limit")
+        output = bytearray()
+        deadline = time.monotonic() + timeout_seconds
+        while len(output) <= max_bytes:
+            if expected_length is not None and len(output) >= expected_length:
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Webpage response exceeded its time limit")
+            if connection.sock is not None:
+                connection.sock.settimeout(remaining)
+            byte_limit = (
+                expected_length - len(output)
+                if expected_length is not None else max_bytes + 1 - len(output)
+            )
+            chunk = response.read1(min(_CHUNK_SIZE, byte_limit))
+            if not chunk:
+                break
+            output.extend(chunk)
+        if len(output) > max_bytes:
+            raise ValueError("The webpage is larger than the 2 MiB reading limit")
+        if expected_length is not None and len(output) != expected_length:
+            raise ValueError("The webpage response ended before its declared size")
+        return bytes(output), media_type
+    finally:
+        connection.close()
+
+
 def require_public_https_url(url: str) -> str:
     """Syntactically validate provider returned image URLs (DNS checks are async)."""
     _parse_public_https_url(url)
     return url
+
+
+async def fetch_public_https_document(
+    url: str, *, max_bytes: int, timeout_seconds: float = _CONNECTION_TIMEOUT_SECONDS,
+) -> bytes:
+    """Fetch public HTML with connection-time DNS pinning and normal TLS verification."""
+    try:
+        body, _media_type = await asyncio.wait_for(
+            asyncio.to_thread(_download_public_https_document, url, max_bytes, timeout_seconds),
+            timeout=_TOTAL_DOCUMENT_TIMEOUT_SECONDS,
+        )
+    except TimeoutError as exc:
+        raise ValueError("Webpage request timed out") from exc
+    return body
 
 
 async def validate_public_https_url(url: str) -> str:

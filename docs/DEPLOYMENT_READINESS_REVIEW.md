@@ -5,13 +5,13 @@ items that require GitHub or a target host.
 
 ## Verified in this workspace
 
-- Full pytest suite: **322 passed**.
+- Full pytest suite: **342 passed on each of Python 3.11, 3.12, 3.13, 3.14, and 3.15**.
 - Ruff `E4,E7,E9,F`: clean across `src`, `tests`, `scripts`.
 - `python -m compileall -q src tests scripts`: clean.
 - `node --check` and `node --test`: clean (3 JavaScript tests).
 - Wheel build: `dist/enan_ultra_telegram_ai-0.1.0-py3-none-any.whl`, 62 files.
 - All Mini App assets present in the wheel (3 static files + 10 themes).
-- `scripts/validate_config.py`: `.env.example` documents 138 unique keys; the
+- `scripts/validate_config.py`: `.env.example` documents 138 unique keys (no duplicates); the
   Settings loader accepts documented defaults and rejects invalid
   `ACCESS_MODE`/allowlist combinations.
 - Workflow YAML and repository JSON parse successfully.

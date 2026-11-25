@@ -48,15 +48,15 @@ No critical code defect was confirmed by the local checks; absence of a confirme
 | Admin alerts, deployment-result notification and failure handling | `PARTIAL` | `runtime.py`, `services/telegram_messages.py`; local mocked send/fallback and persisted-result paths. | No live Telegram delivery, outage, retry or post-restart alert test. |
 | SQLite memory, profiles, reminders, approvals and migrations | `PARTIAL` | `storage/database.py`; temporary SQLite tests, including online-backup/restore helper behavior. | No production DB read, migration, backup or restore. |
 | Mini App, themes and sticker features | `PARTIAL` | `mini_app.py`, `webapp/`, `theme_engine.py`, `sticker_collector.py`; ASGI/database/JS tests. | Public HTTPS launch, Telegram WebApp validation and live sticker permissions are not verified. |
-| Supported Python and CI coverage | `PASS — CONFIG REVIEW`; current remote run `NOT TESTED` | `pyproject.toml` declares `>=3.11,<3.16`; `.github/workflows/tests.yml` declares Python 3.11–3.15 test jobs plus a 3.15 quality/build job. | No CI run is bound to this dirty worktree; workflow configuration is not a CI result. |
+| Supported Python and CI coverage | `PASS — LOCAL`; current remote run `NOT TESTED` | `pyproject.toml` declares `>=3.11.5,<3.16`; `.github/workflows/ci.yml` declares the Python 3.11–3.15 pytest matrix plus quality, dependency-audit, build and config-validation jobs. | The full suite passed locally on every declared version; no CI run is bound to this dirty worktree, so workflow configuration is not a CI result. |
 | Current release artifact/provenance | `BLOCKED` | A fresh wheel from the final dirty tree was built in a unique temporary directory; ZIP integrity and 13 expected web assets passed (SHA-256 `ab0711429880ac1a21178b261d73ddcbeab8325ba6975a7dce57f9a36b45b8f6`). Historic artifacts point to other source states. | The temporary wheel is not a reviewed release artifact and has no current CI attestation or signature. Do not use older artifacts as proof; build/sign/attest from a reviewed commit. |
 | Autonomous model training | `NOT IMPLEMENTED` | Learning features aggregate opt-in feedback/preferences; they do not train or fine-tune a model. | Keep product wording explicit; provider fine-tuning is a separate unsupported workflow. |
 | Real Azure target, Ubuntu/systemd, target compatibility and recovery | `BLOCKED` | Current workspace broker/unit target `telegram-ai.service`, `enan-ultra`, `/opt/enan-ultra`; historical Azure observations are not current evidence. | No current Azure read-only inventory or disposable Ubuntu/systemd staging evidence is available. Keep production `NO-GO`. |
 
 ### Checks actually run for this snapshot
 
-- `uv run --isolated --locked --python 3.15 --group test pytest -q` — **247 passed** on Windows/Python 3.15.
-- Menu, ZIP and update-idempotency subset after the final duplicate-registration assertion — **51 passed**. The prior full suite had **247 passed**; production code did not change after that full run.
+- Current tree: `uv run --locked --group test pytest -q` — **342 passed** on each of Python 3.11, 3.12, 3.13, 3.14, and 3.15.
+- Historical snapshot for this addendum: **247 passed** on Windows/Python 3.15, with a 51-test menu/ZIP/idempotency subset. Those counts are superseded by the current run above.
 - `uv lock --check` — **passed**, 55 locked packages resolved.
 - `pip-audit 2.10.1` on the locked build/test export — **No known vulnerabilities found**; this is a local audit, not CI evidence.
 - Ruff (`E4,E7,E9,F`), Python `compileall`, frontend `node --check`, and `node --test tests/test_webapp_theme_ui.cjs` — **passed** (2 JavaScript tests).
@@ -205,7 +205,7 @@ The feature matrix and results above are historical; this addendum records the c
 
 | Scope | Current evidence | Status and boundary |
 |---|---|---|
-| pypdf dependency remediation | `pypdf==6.21.2` is present in project metadata, `uv.lock`, and the pinned requirements export. Export and requirements matched all 49 package versions and hashes; `uv lock --check` passed. `pip-audit 2.10.1` reported no known vulnerabilities for that exported snapshot. | PASS for the current locked snapshot only; the audit used `--no-deps` and emitted its scope warning. Re-audit after any dependency changes. |
+| Dependency remediation | `pypdf==6.21.4`, `soupsieve==4.1.3`, and `opentelemetry-api==1.45.2` are pinned in project metadata, `uv.lock`, and the regenerated `requirements.txt` export. `uv lock --check` passed and the export reproduced byte-for-byte. `pip-audit 2.10.1` reported no known vulnerabilities for both installation artifacts. | PASS for the current locked snapshot only; the audit used `--no-deps` and emitted its scope warning. Re-audit after any dependency changes. |
 | PDF and Telegram message tests | Isolated Python 3.12.10 run: `tests/test_telegram_messages.py` — 13 passed in 32.10s (exit 0). | PASS for these local tests; not a live Telegram test. |
 | Static checks | Ruff `E4,E7,E9,F`, Python compileall, and `uv lock --check` exited 0. | PASS for the named local checks. |
 | Full Python 3.12 suite | 286 passed, 1 failed, exit 1. A mocked broker test timed out in its five-second completion wait while still `restarting`; isolated retry passed 1 test. | FAIL for the full-suite run; passing retry does not erase the failure or establish a stable full-suite pass. |

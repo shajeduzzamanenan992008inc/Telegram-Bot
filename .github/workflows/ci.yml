@@ -28,17 +28,17 @@ jobs:
         python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
     steps:
       - name: Checkout without persisted credentials
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
 
       - name: Install dependencies
         run: uv sync --locked --python ${{ matrix.python-version }} --group build --group test
@@ -59,22 +59,22 @@ jobs:
       contents: read
     steps:
       - name: Checkout without persisted credentials
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.13"
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
 
       - name: Install dependencies
         run: uv sync --locked --python 3.13 --group build --group test
@@ -101,17 +101,25 @@ jobs:
       contents: read
     steps:
       - name: Checkout without persisted credentials
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.13"
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Verify committed requirements export
+        run: |
+          uv export --locked --format requirements.txt --no-dev --group build --no-emit-project --output-file requirements.txt
+          git diff --exit-code -- requirements.txt
+
+      - name: Audit committed requirements export
+        run: uvx --from pip-audit==2.10.1 pip-audit --no-deps --requirement requirements.txt
 
       - name: Audit locked dependencies
         run: |
@@ -126,17 +134,17 @@ jobs:
       contents: read
     steps:
       - name: Checkout without persisted credentials
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.13"
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
 
       - name: Build wheel
         run: uv build --wheel --no-sources
@@ -180,17 +188,17 @@ jobs:
       contents: read
     steps:
       - name: Checkout without persisted credentials
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.13"
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
 
       - name: Install dependencies and YAML parser
         run: |
@@ -209,7 +217,8 @@ jobs:
           import yaml
 
           failures = []
-          for path in sorted(Path(".github/workflows").glob("*.yml")):
+          workflow_paths = sorted(Path(".github/workflows").glob("*.yml"))
+          for path in workflow_paths:
               try:
                   document = yaml.safe_load(path.read_text(encoding="utf-8"))
               except yaml.YAMLError as exc:
@@ -217,9 +226,27 @@ jobs:
                   continue
               if not isinstance(document, dict) or "jobs" not in document:
                   failures.append(f"{path}: missing jobs")
-          for path in sorted(Path(".github").glob("*.json")) + [Path(".github/project-profile.json")]:
-              if not path.exists():
                   continue
+              if not isinstance(document["jobs"], dict) or not document["jobs"]:
+                  failures.append(f"{path}: jobs must be a non-empty mapping")
+                  continue
+              for job_name, job in document["jobs"].items():
+                  if not isinstance(job, dict) or not (
+                      "runs-on" in job or "uses" in job
+                  ):
+                      failures.append(f"{path}: job {job_name} has no runs-on/uses")
+          dependabot = Path(".github/dependabot.yml")
+          if dependabot.exists():
+              try:
+                  document = yaml.safe_load(dependabot.read_text(encoding="utf-8"))
+              except yaml.YAMLError as exc:
+                  failures.append(f"{dependabot}: {exc}")
+              else:
+                  if not isinstance(document, dict) or document.get("version") != 2:
+                      failures.append(f"{dependabot}: expected Dependabot version 2")
+                  if not isinstance(document.get("updates"), list):
+                      failures.append(f"{dependabot}: missing updates list")
+          for path in sorted(Path(".github").rglob("*.json")):
               try:
                   json.loads(path.read_text(encoding="utf-8"))
               except json.JSONDecodeError as exc:

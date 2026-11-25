@@ -4,13 +4,13 @@ Verified locally on Windows, Python 3.15.2, on 2026-11-25.
 
 ## Result
 
-- **Full pytest suite**: `322 passed`, 0 failed, 0 skipped on Python 3.15.2 and
-  again on Python 3.11 (`uv run --python 3.11`).
+- **Full pytest suite**: `342 passed`, 0 failed, 0 skipped on each of Python
+  3.11, 3.12, 3.13, 3.14, and 3.15 (`uv run --locked --python <version>`).
 - **Restored regression file**: `tests/test_final_upgrade.py` — 45 tests, all
   passing (file restored from commit `47067e7`, reconciled with current APIs).
-- **Mode-specific tests**: 27 passing across:
+- **Mode-specific tests**: 29 passing across:
   - `tests/test_private_public_mode.py` (21)
-  - `tests/test_private_public_enforcement.py` (6)
+  - `tests/test_private_public_enforcement.py` (8)
 
 ## What is covered
 

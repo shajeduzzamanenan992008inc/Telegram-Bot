@@ -268,11 +268,6 @@ class MiniAppServer:
             prompt = prompt.strip()
             if len(prompt) > self.settings.max_input_chars:
                 raise HTTPException(status_code=413, detail="Message is too long")
-            allowed, reason = await self.access_control.is_access_allowed(user_id)
-            if not allowed or await self.db.is_user_blocked(user_id):
-                raise HTTPException(status_code=403, detail="This account is not authorized")
-            if await self.db.is_user_blocked(user_id):
-                raise HTTPException(status_code=403, detail="This account is blocked")
             lock = self.handlers.locks.setdefault(user_id, asyncio.Lock())
             if lock.locked():
                 raise HTTPException(status_code=429, detail="A response is already being generated for this account")

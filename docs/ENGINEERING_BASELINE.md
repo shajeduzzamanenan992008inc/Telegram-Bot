@@ -171,11 +171,9 @@ src/enan_ultra/
 ## CI/CD Workflows (`.github/workflows/`)
 | Workfile | Triggers | Key Checks |
 |----------|----------|------------|
-| `ci.yml` | push, PR, dispatch | Multi-Python tests (3.11-3.13), profile checks, packaging |
-| `tests.yml` | push, PR | Quality (ruff, compile, JS), audit, build, test matrix (3.11-3.15) |
-| `security.yml` | push, PR, weekly | CodeQL Python analysis |
-| `config-validation.yml` | push, PR | Config validation |
-| `dependency-review.yml` | PR | Dependency review |
+| `ci.yml` | push, PR, dispatch | Pytest matrix (3.11-3.15), ruff/compile/JS checks, config validation, committed export consistency, pip-audit, wheel build/assets |
+| `security.yml` | push, PR, weekly | CodeQL Python analysis (pinned SHA, least privilege) |
+| `dependency-review.yml` | PR | Dependency review (pinned SHA) |
 
 ## Known Limitations & Technical Debt
 

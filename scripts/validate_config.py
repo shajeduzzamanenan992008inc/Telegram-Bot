@@ -9,7 +9,6 @@ from __future__ import annotations
 import os
 import re
 import sys
-import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,21 +46,18 @@ def _loader_keys() -> set[str]:
 def _load_settings(monkeypatch: dict[str, str]):
     from enan_ultra.config import Settings
 
-    with tempfile.TemporaryDirectory() as directory:
-        previous = dict(os.environ)
-        try:
-            # A temporary working directory prevents a developer .env file from
-            # influencing the check.
-            os.chdir(directory)
-            for name in _TEST_ENVIRONMENT:
-                os.environ.pop(name, None)
-            os.environ.update(_TEST_ENVIRONMENT)
-            os.environ.update(monkeypatch)
-            return Settings.load()
-        finally:
-            os.chdir(ROOT)
-            os.environ.clear()
-            os.environ.update(previous)
+    previous = dict(os.environ)
+    try:
+        for name in _TEST_ENVIRONMENT:
+            os.environ.pop(name, None)
+        os.environ.update(_TEST_ENVIRONMENT)
+        os.environ.update(monkeypatch)
+        # Disable implicit dotenv discovery: python-dotenv walks up from the
+        # config module, so a repository .env is found even from another cwd.
+        return Settings.load(dotenv_path=None)
+    finally:
+        os.environ.clear()
+        os.environ.update(previous)
 
 
 def main() -> int:

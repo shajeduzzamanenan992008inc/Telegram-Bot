@@ -5,14 +5,32 @@ from __future__ import annotations
 import math
 import os
 import re
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from dotenv import dotenv_values
 
+
+class _DotenvDefault:
+    """Sentinel that keeps implicit dotenv discovery for existing callers."""
+
+
+_DOTENV_DEFAULT = _DotenvDefault()
+_dotenv_override: ContextVar[Path | None | _DotenvDefault] = ContextVar(
+    "enan_dotenv_override", default=_DOTENV_DEFAULT,
+)
+
+
 def _value(name: str, default: str = "") -> str:
-    from_file = dotenv_values().get(name)
+    override = _dotenv_override.get()
+    if isinstance(override, _DotenvDefault):
+        from_file = dotenv_values().get(name)
+    elif override is None:
+        from_file = None
+    else:
+        from_file = dotenv_values(override).get(name)
     return os.environ.get(name, str(from_file) if from_file is not None else default).strip()
 
 
@@ -272,7 +290,28 @@ class Settings:
         return self.admin_user_ids
 
     @classmethod
-    def load(cls) -> "Settings":
+    def load(
+        cls, *, dotenv_path: str | Path | None | _DotenvDefault = _DOTENV_DEFAULT,
+    ) -> "Settings":
+        """Load validated settings.
+
+        The default keeps implicit ``.env`` discovery for local development.
+        Callers that must be isolated (configuration validation, tests) can
+        pass ``dotenv_path=None`` to disable dotenv reads entirely, or an
+        explicit path to read only that file.
+        """
+        if isinstance(dotenv_path, _DotenvDefault):
+            return cls._load()
+        token = _dotenv_override.set(
+            None if dotenv_path is None else Path(dotenv_path),
+        )
+        try:
+            return cls._load()
+        finally:
+            _dotenv_override.reset(token)
+
+    @classmethod
+    def _load(cls) -> "Settings":
         token = _value("TELEGRAM_BOT_TOKEN")
         if not token or token.startswith("replace-"):
             raise ValueError("TELEGRAM_BOT_TOKEN is required")
