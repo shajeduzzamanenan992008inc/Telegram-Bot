@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -67,7 +68,12 @@ def test_clamav_configuration_is_opt_in_and_validates_socket_path(monkeypatch, t
     _settings_env(monkeypatch, tmp_path)
     settings = Settings.load()
     assert settings.malware_scan_enabled is False
-    assert settings.clamav_socket_path == Path("/var/run/clamav/clamd.ctl")
+    expected_socket = (
+        Path(r"\\.\pipe\clamav")
+        if os.name == "nt"
+        else Path("/var/run/clamav/clamd.ctl")
+    )
+    assert settings.clamav_socket_path == expected_socket
 
     monkeypatch.setenv("MALWARE_SCAN_ENABLED", "true")
     monkeypatch.setenv("CLAMAV_SOCKET_PATH", "relative/clamd.ctl")

@@ -53,10 +53,14 @@ items that require GitHub or a target host.
 - `/healthz` exists on the Mini App; dashboard health snapshots exist.
 - Provider circuit breakers, admin alerts, encrypted backup and audit-chain
   verification are implemented.
-- CodeQL and dependency-review workflows are configured; results are unknown
-  until they run on GitHub.
-- Branch protection, secret scanning, and Dependabot PR status were **not**
-  verifiable from this environment.
+- Dependency audit passes locally with no known vulnerabilities after bumping
+  `pypdf`, `soupsieve`, and `opentelemetry-api`.
+- CodeQL and dependency-review workflows are configured, but GitHub Actions jobs
+  are refused before execution by the account's failed payment/spending limit.
+- Branch protection on `main` is active (strict checks, 1 reviewer, no force
+  push/deletion), verified via the GitHub API. Secret scanning is not available
+  on the current plan. Dependabot alerts and security updates are enabled; no
+  pull requests are open (PR #15 is closed).
 
 ## Verdict
 
