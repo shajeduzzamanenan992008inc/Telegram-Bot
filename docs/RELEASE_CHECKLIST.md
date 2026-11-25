@@ -20,9 +20,12 @@
 - [x] Global mode row seeded/upserted correctly (migration 17)
 - [x] `/setmode` command collision removed
 - [x] Mode-specific regression tests (27) pass
-- [ ] CodeQL results reviewed (runs on GitHub; not run here)
-- [ ] Dependency audit (`pip-audit`) run against the lock (CI job; not run here)
-- [ ] Branch protection and secret scanning verified (GitHub settings)
+- [x] Dependency audit (`pip-audit`) — no known vulnerabilities
+- [x] Branch protection on `main`: strict required checks, 1 reviewer approval,
+      force-push and deletion protection (verified via API)
+- [x] Dependabot alerts and automated security fixes enabled
+- [ ] CodeQL results reviewed (GitHub Actions blocked by account billing)
+- [ ] Secret scanning (GitHub: not available for this repository/plan)
 
 ### Documentation
 
@@ -47,7 +50,9 @@
 - [x] `config-validation.yml` validates this repository's YAML/JSON/settings
 - [x] `security.yml` CodeQL configuration retained
 - [x] `dependency-review.yml` retained
-- [ ] Workflows executed successfully on GitHub (not run from this workspace)
+- [ ] Workflows executed successfully on GitHub — **blocked**: every job at
+      `446fcae` was refused before its first step with GitHub's failed
+      payment/spending-limit annotation
 
 ## Release Process
 

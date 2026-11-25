@@ -4,7 +4,8 @@ Verified locally on Windows, Python 3.15.2, on 2026-11-25.
 
 ## Result
 
-- **Full pytest suite**: `322 passed` (`python -m pytest -q`), 0 failed.
+- **Full pytest suite**: `322 passed`, 0 failed, 0 skipped on Python 3.15.2 and
+  again on Python 3.11 (`uv run --python 3.11`).
 - **Restored regression file**: `tests/test_final_upgrade.py` — 45 tests, all
   passing (file restored from commit `47067e7`, reconciled with current APIs).
 - **Mode-specific tests**: 27 passing across:
@@ -52,8 +53,11 @@ covered indirectly by every test that switches to PUBLIC and reads it back.
 
 ## Not covered / limitations
 
-- Workflows have not been executed on GitHub from this environment; only local
-  equivalents (pytest, ruff, compileall, Node checks, wheel build) were run.
+- GitHub Actions jobs at `446fcae` did not execute: GitHub annotated every job
+  with a failed payment/spending-limit message. Local equivalents (pytest, ruff,
+  compileall, Node checks, wheel build, dependency audit) were run instead.
+- A Windows-only ClamAV default-path assertion was found and made
+  platform-aware; the Linux default assertion is unchanged.
 - No webhook transport test infrastructure exists; the bot uses polling.
 - Long-running background jobs are not exercised against a mode change; the
   codebase has no user-facing background authorization path beyond handler

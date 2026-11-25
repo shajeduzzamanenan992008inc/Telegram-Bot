@@ -67,6 +67,22 @@ mode.
 Result: 45 tests in that file, all executing and passing. No test was deleted or
 weakened to obtain a pass.
 
+## CI failure root cause (2026-11-25)
+
+Every failed job at `446fcae` (Telegram Bot CI, Tests, CodeQL, Configuration
+Validation) has zero executed steps and this GitHub annotation:
+
+> The job was not started because recent account payments have failed or your
+> spending limit needs to be increased.
+
+That is an account billing/plan blocker, not a repository defect. GitHub Actions
+cannot run and CodeQL/configuration results cannot be produced until it is
+resolved. One additional real failure was reproduced locally and fixed:
+`pip-audit` found 9 vulnerabilities in `pypdf 6.21.2`, `soupsieve 3.0.3`, and
+`opentelemetry-api 1.45.1`. Pins/lock now resolve `pypdf 6.21.4`,
+`soupsieve 4.1.3`, and `opentelemetry-api 1.45.2`; the audit reports no known
+vulnerabilities.
+
 ## Verified test and build results
 
 | Check | Result |
@@ -79,6 +95,8 @@ weakened to obtain a pass.
 | Node syntax + tests | clean (3 tests) |
 | Wheel build | 62 files, assets verified |
 | Config validation | passed (138 documented keys) |
+| Dependency audit | no known vulnerabilities |
+| Python 3.11 pytest | 322 passed |
 | Workflow/JSON YAML parse | passed |
 
 ## CI workflow repair
@@ -90,12 +108,22 @@ verification, and configuration validation. `config-validation.yml` now validate
 this repository's workflows/JSON/settings. CodeQL and dependency review remain
 configured. Workflows have **not** been executed on GitHub from this workspace.
 
+## GitHub settings (verified via API)
+
+- Branch protection on `main` is now active: strict required checks
+  (10 contexts), 1 approving review, force pushes and branch deletion disabled.
+  Admin enforcement is off so an owner can land an emergency fix.
+- Dependabot alerts and automated security fixes enabled.
+- Secret scanning: GitHub returned "Secret scanning is not available for this
+  repository" (plan/GHAS limitation), so it is not active.
+- Dependabot PR #15 (CodeQL action 3.39.4 → 4.39.4) is **closed**; there are zero
+  open pull requests, so nothing was merged.
+
 ## Not completed / not verifiable here
 
-- Dependabot PRs #15–#19: no GitHub access in this environment; none inspected,
-  merged, or closed.
-- Branch protection, required reviews, secret scanning, and CodeQL results: no
-  GitHub administrative access; not claimed as active.
+- GitHub Actions execution: blocked by the account billing/spending-limit
+  annotation, not by a code defect. CodeQL and Configuration Validation results
+  therefore remain unverified.
 - Live deployment, systemd install, backup/restore, and production smoke tests:
   not performed (no authorized target host).
 - Background-task mode enforcement: no user-facing background authorization path
@@ -104,6 +132,9 @@ configured. Workflows have **not** been executed on GitHub from this workspace.
 
 ## Status
 
-**COMPLETE WITH LIMITATIONS** — the critical Private Mode bypass and the mode-row
-migration defect are fixed and covered by real tests; CI and documentation are
-repaired. GitHub-side PR/settings verification and live deployment remain open.
+**BLOCKED** — all reproducible code defects are fixed and verified locally (322
+tests on Python 3.11 and 3.15, clean static analysis, clean dependency audit,
+wheel and assets verified), and branch protection is active. Priority 1 cannot
+be closed because GitHub Actions jobs are refused before execution by the
+account's failed payment/spending limit; CodeQL and CI cannot go green until the
+owner resolves billing. Secret scanning is unavailable on the current plan.
