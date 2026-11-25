@@ -1,41 +1,104 @@
-# Environment files — `.env` holds local secrets and is never committed.
+# ==============================================================================
+# Environment Variables, Secrets & Credentials
+# ==============================================================================
+# Never commit local secrets, API keys, service account keys, or certs.
 .env
 .env.*
 !.env.example
+!.env.template
+!.env.sample
+*.pem
+*.key
+*.crt
+*.cer
+*.der
+*.p12
+*.pfx
+*.jks
+*.keystore
+*credentials*.json
+*service-account*.json
+secrets/
+.secrets/
 
-# Python cache & compiled files
+# ==============================================================================
+# Python Bytecode, Caches & Test/Coverage Artifacts
+# ==============================================================================
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
+*.pyd
 .pytest_cache/
 .coverage
+.coverage.*
+coverage.xml
+pytest-report.xml
 htmlcov/
 .tox/
+.nox/
+.eggs/
+*.egg-info/
+*.egg
+*.whl
+*.mo
+*.pot
 
+# ==============================================================================
 # Virtual Environments
+# ==============================================================================
 .venv/
 venv/
-antenv/
-ENV/
 env/
+ENV/
+antenv/
+conda-meta/
+pip-wheel-metadata/
 
-# Database files (SQLite & backups)
-backups/
+# ==============================================================================
+# Databases, Instance State & Backups
+# ==============================================================================
+instance/
+!instance/.gitkeep
+instance/*.sqlite
 instance/*.sqlite3
+instance/*.sqlite3-*
 instance/*.db
-instance/datasets/
+instance/*.db-*
 instance/*.log
+instance/datasets/
+backups/
+*.sqlite
 *.sqlite3
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
 *.db
 *.db-journal
+*.db-wal
+*.db-shm
+*.dump
+*.sql.bak
 
-# Logs
+# ==============================================================================
+# Logs & Runtime Diagnostics
+# ==============================================================================
+logs/
 *.log
+*.log.*
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+startup.log
+azure-logs/
+oryx-manifest.toml
+*.publishsettings
 
-# User uploads & temporary media files
+# ==============================================================================
+# User Uploads, Media & Test Artifacts
+# ==============================================================================
 uploads/*
 !uploads/.gitkeep
 app/static/profile-image-test-*/
@@ -45,45 +108,88 @@ app/static/uploads/branding/*
 !app/static/uploads/branding/.gitkeep
 app/static/uploads/products/*
 !app/static/uploads/products/.gitkeep
+app/static/uploads/tmp/
 
-# Temporary test & scratch debug files
+# Temporary test, debug & scratch files
+tmp/
+temp/
 tmp_*
+temp_*
+scratch/
 tests/tmp_*
+tests/.tmp/
+.tmp/
 
-# IDE / Editor settings
-.vscode/
-.idea/
-*.sublime-project
-*.sublime-workspace
+# ==============================================================================
+# Node / Frontend Build & Dependency Caches (if applicable)
+# ==============================================================================
+node_modules/
+.next/
+.nuxt/
+.output/
+.parcel-cache/
+.vite/
+.turbo/
+.eslintcache
+.stylelintcache
+*.tsbuildinfo
 
-# OS specific files
-.DS_Store
-Thumbs.db
-Desktop.ini
-
-# Packaging & Build outputs
+# ==============================================================================
+# Packaging, Archives & Build Outputs
+# ==============================================================================
 build/
 dist/
-*.egg-info/
-*.whl
-*.tar.gz
-nexhaat-deploy.zip
 staging/
-coverage.xml
-pytest-report.xml
+out/
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.bz2
+*.xz
+*.7z
+*.rar
 *.bak
 *.swp
+*.swo
+*~
 
-# Azure / deployment diagnostics
-*.zip
-*.publishsettings
-azure-logs/
-startup.log
-oryx-manifest.toml
+# ==============================================================================
+# IDEs, Editors & Local Tooling State
+# ==============================================================================
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.iml
+*.ipr
+*.iws
+*.sublime-project
+*.sublime-workspace
+.fleet/
+.cursor/
 
-# Local tooling state
+# Python / Repo local tooling & caches
 .python-version
 .ruff_cache/
 .mypy_cache/
 .pyright/
 .hypothesis/
+.dmypy.json
+dmypy.json
+.pre-commit-config.yaml.bak
+
+# ==============================================================================
+# OS Metadata Files
+# ==============================================================================
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/

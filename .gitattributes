@@ -1,16 +1,143 @@
-# Keep one canonical line ending (LF) in the repository. The deployed runtime is
-# Linux and CI runs on Linux, so normalising here avoids CRLF-only diffs.
+# ==============================================================================
+# Line Endings & Normalization
+# ==============================================================================
+# Normalize all text files to LF in the repository to prevent CRLF/LF churn
+# across Linux CI/CD, Linux production runtimes, macOS, and Windows contributors.
 * text=auto eol=lf
 
-# Binary assets are never line-ending converted.
+# Explicitly enforce LF for source, config, script, and markup files
+*.py text eol=lf
+*.pyi text eol=lf
+*.pyx text eol=lf
+*.sh text eol=lf
+*.bash text eol=lf
+*.zsh text eol=lf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+*.js text eol=lf
+*.mjs text eol=lf
+*.cjs text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.jsx text eol=lf
+*.json text eol=lf
+*.jsonc text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.toml text eol=lf
+*.xml text eol=lf
+*.html text eol=lf
+*.htm text eol=lf
+*.jinja text eol=lf
+*.jinja2 text eol=lf
+*.j2 text eol=lf
+*.css text eol=lf
+*.scss text eol=lf
+*.sass text eol=lf
+*.less text eol=lf
+*.sql text eol=lf
+*.md text eol=lf
+*.mdx text eol=lf
+*.txt text eol=lf
+*.ini text eol=lf
+*.cfg text eol=lf
+*.conf text eol=lf
+*.env text eol=lf
+*.example text eol=lf
+*.gitignore text eol=lf
+*.gitattributes text eol=lf
+*.dockerignore text eol=lf
+Dockerfile* text eol=lf
+Makefile text eol=lf
+
+# ==============================================================================
+# Binary Assets (Never Line-Ending Converted)
+# ==============================================================================
+# Fonts
 *.ttf binary
 *.otf binary
 *.woff binary
 *.woff2 binary
+*.eot binary
+
+# Images & Raster/Vector Media
 *.png binary
 *.jpg binary
 *.jpeg binary
+*.jpe binary
 *.gif binary
+*.webp binary
+*.avif binary
 *.ico binary
+*.cur binary
+*.bmp binary
+*.tif binary
+*.tiff binary
+*.heic binary
+*.heif binary
+*.svg binary
+
+# Audio & Video
+*.mp3 binary
+*.wav binary
+*.ogg binary
+*.m4a binary
+*.flac binary
+*.mp4 binary
+*.webm binary
+*.mov binary
+*.avi binary
+*.mkv binary
+
+# Documents, Archives, Databases & Compiled Artifacts
 *.pdf binary
+*.doc binary
+*.docx binary
+*.xls binary
+*.xlsx binary
+*.ppt binary
+*.pptx binary
 *.zip binary
+*.tar binary
+*.gz binary
+*.tgz binary
+*.bz2 binary
+*.xz binary
+*.7z binary
+*.rar binary
+*.whl binary
+*.egg binary
+*.so binary
+*.dylib binary
+*.dll binary
+*.exe binary
+*.bin binary
+*.sqlite binary
+*.sqlite3 binary
+*.db binary
+
+# ==============================================================================
+# Diff Drivers & GitHub Linguist / Archive Hygiene
+# ==============================================================================
+# Better function-context diffs for Python
+*.py diff=python
+
+# Treat lockfiles and generated assets as non-diffable noise in PRs (still tracked)
+package-lock.json linguist-generated=true
+yarn.lock linguist-generated=true
+pnpm-lock.yaml linguist-generated=true
+poetry.lock linguist-generated=true
+Pipfile.lock linguist-generated=true
+uv.lock linguist-generated=true
+
+# Exclude local/dev-only files from `git archive` exports
+.gitattributes export-ignore
+.gitignore export-ignore
+.dockerignore export-ignore
+.env* export-ignore
+!.env.example export-ignore
+tests/ export-ignore
+*.test.py export-ignore
+*_test.py export-ignore
