@@ -2,9 +2,207 @@
 
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
-from enan_ultra.security import is_admin, is_authorized
+import pytest
+
+from enan_ultra.access_control import AccessControlService, AccessDeniedError
+from enan_ultra.config import Settings
+from enan_ultra.mini_app import validate_init_data
+from enan_ultra.security import is_authorized
+from enan_ultra.storage.database import Database
+
+TOKEN = "123456:private-public-test-token-with-sufficient-length"
+APP_KEY = "k" * 64
+ADMIN_ID = 100
+ORDINARY_ID = 200
+ALLOWLISTED_ID = 300
+
+
+def _settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, access_mode: str) -> Settings:
+    monkeypatch.chdir(tmp_path)
+    values = {
+        "TELEGRAM_BOT_TOKEN": TOKEN,
+        "ADMIN_CHAT_ID": "123456",
+        "ADMIN_USER_IDS": str(ADMIN_ID),
+        "ALLOWED_USER_IDS": str(ALLOWLISTED_ID),
+        "OPENROUTER_API_KEY": "test-provider-key",
+        "APP_DATA_KEY": APP_KEY,
+        "DASHBOARD_AUTH_TOKEN": "test-dashboard-auth-token-12345678901234567890",
+        "ACCESS_MODE": access_mode,
+    }
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+    settings = Settings.load()
+    assert settings.access_mode == access_mode
+    return settings
+
+
+def _run_mode_scenario(tmp_path: Path, settings: Settings, mode: str):
+    async def scenario():
+        db = Database(tmp_path / "access-mode.sqlite3")
+        await db.open()
+        try:
+            await db.set_global_access_mode(mode, ADMIN_ID)
+            service = AccessControlService(settings, db)
+            results = {
+                "admin": await service.is_access_allowed(ADMIN_ID),
+                "ordinary": await service.is_access_allowed(ORDINARY_ID),
+                "allowlisted": await service.is_access_allowed(ALLOWLISTED_ID),
+            }
+            await db.set_user_blocked(ORDINARY_ID, ADMIN_ID, "test block")
+            results["blocked_ordinary"] = await service.is_access_allowed(ORDINARY_ID)
+            return results
+        finally:
+            await db.close()
+
+    return asyncio.run(scenario())
+
+
+class TestAccessControlServiceWithDatabase:
+    """Real service + real temporary database: the database mode is authoritative."""
+
+    def test_private_db_mode_overrides_public_local_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        settings = _settings(tmp_path, monkeypatch, "public")
+        results = _run_mode_scenario(tmp_path, settings, "private")
+        assert results["admin"] == (True, "admin")
+        assert results["ordinary"] == (False, "private_mode")
+        assert results["allowlisted"] == (False, "private_mode")
+        assert results["blocked_ordinary"] == (False, "blocked")
+
+    def test_private_db_mode_denies_ordinary_users_in_allowlist_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        settings = _settings(tmp_path, monkeypatch, "allowlist")
+        results = _run_mode_scenario(tmp_path, settings, "private")
+        assert results["admin"] == (True, "admin")
+        assert results["ordinary"] == (False, "private_mode")
+        assert results["allowlisted"] == (False, "private_mode")
+
+    def test_public_db_mode_restores_public_access_policy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        settings = _settings(tmp_path, monkeypatch, "public")
+        results = _run_mode_scenario(tmp_path, settings, "public")
+        assert results["admin"] == (True, "admin")
+        assert results["ordinary"] == (True, "allowed")
+        assert results["allowlisted"] == (True, "allowed")
+        assert results["blocked_ordinary"] == (False, "blocked")
+
+    def test_public_db_mode_still_honours_allowlist_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        settings = _settings(tmp_path, monkeypatch, "allowlist")
+        results = _run_mode_scenario(tmp_path, settings, "public")
+        assert results["admin"] == (True, "admin")
+        assert results["ordinary"] == (False, "unauthorized")
+        assert results["allowlisted"] == (True, "allowed")
+
+    def test_unreadable_mode_fails_closed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        settings = _settings(tmp_path, monkeypatch, "public")
+
+        class BrokenDatabase:
+            async def get_global_access_mode(self) -> str:
+                raise RuntimeError("database unavailable")
+
+            async def is_user_blocked(self, user_id: int) -> bool:
+                raise AssertionError("must not be reached before mode read")
+
+        async def scenario() -> None:
+            service = AccessControlService(settings, BrokenDatabase())
+            assert await service.is_access_allowed(ORDINARY_ID) == (
+                False, "mode_unavailable",
+            )
+            # Administrators keep recovery access even when the mode is unreadable.
+            assert await service.is_access_allowed(ADMIN_ID) == (True, "admin")
+            with pytest.raises(AccessDeniedError) as denied:
+                await service.require_access(ORDINARY_ID)
+            assert denied.value.reason == "mode_unavailable"
+
+        asyncio.run(scenario())
+
+    def test_unknown_persisted_mode_fails_closed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        settings = _settings(tmp_path, monkeypatch, "public")
+
+        class UnknownModeDatabase:
+            async def get_global_access_mode(self) -> str:
+                return "enabled"
+
+            async def is_user_blocked(self, user_id: int) -> bool:
+                return False
+
+        async def scenario() -> None:
+            service = AccessControlService(settings, UnknownModeDatabase())
+            assert await service.is_access_allowed(ORDINARY_ID) == (
+                False, "mode_unavailable",
+            )
+
+        asyncio.run(scenario())
+
+    def test_default_database_mode_is_private(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        settings = _settings(tmp_path, monkeypatch, "public")
+
+        async def scenario() -> None:
+            db = Database(tmp_path / "fresh.sqlite3")
+            await db.open()
+            try:
+                assert await db.get_global_access_mode() == "private"
+                service = AccessControlService(settings, db)
+                assert await service.is_access_allowed(ORDINARY_ID) == (
+                    False, "private_mode",
+                )
+                assert await service.is_access_allowed(ADMIN_ID) == (True, "admin")
+            finally:
+                await db.close()
+
+        asyncio.run(scenario())
+
+    def test_mini_app_init_data_user_is_subject_to_global_mode(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        settings = _settings(tmp_path, monkeypatch, "public")
+        raw = _signed_init_data(ORDINARY_ID)
+        assert validate_init_data(raw, TOKEN, now=1_800_000_000)["id"] == ORDINARY_ID
+
+        async def scenario() -> None:
+            db = Database(tmp_path / "mini-app-mode.sqlite3")
+            await db.open()
+            try:
+                service = AccessControlService(settings, db)
+                assert (await service.is_access_allowed(ORDINARY_ID))[0] is False
+                await db.set_global_access_mode("public", ADMIN_ID)
+                assert (await service.is_access_allowed(ORDINARY_ID))[0] is True
+            finally:
+                await db.close()
+
+        asyncio.run(scenario())
+
+
+def _signed_init_data(user_id: int) -> str:
+    import hashlib
+    import hmac
+    import json
+    from urllib.parse import urlencode
+
+    values = {
+        "auth_date": "1800000000",
+        "query_id": f"AAEAA-{user_id}",
+        "user": json.dumps({"id": user_id, "first_name": "User"}, separators=(",", ":")),
+    }
+    check = "\n".join(f"{key}={value}" for key, value in sorted(values.items()))
+    secret = hmac.new(b"WebAppData", TOKEN.encode(), hashlib.sha256).digest()
+    values["hash"] = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
+    return urlencode(values)
 
 
 class TestAccessControlLogic:

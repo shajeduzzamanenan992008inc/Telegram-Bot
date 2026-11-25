@@ -1,58 +1,76 @@
 # Deployment Readiness Review — Telegram-Bot
 
-## Executive Summary
-The application is **production-ready** for Linux environments with minor limitations for Windows. All quality gates pass. Deployment configuration is comprehensive but requires environment-specific validation.
+Reviewed 2026-11-25. This review distinguishes locally verified checks from
+items that require GitHub or a target host.
 
-## Infrastructure Readiness
+## Verified in this workspace
 
-### Linux (Ubuntu/Debian) ✅ PASS
-- Systemd service files provided (`deploy/telegram-ai.service`)
-- Installation script (`deploy/install_ubuntu.sh`)
-- Docker sandbox support (`deploy/code-sandbox.Dockerfile`)
-- Socket paths default to `/run/...` (fixed to be configurable)
+- Full pytest suite: **322 passed**.
+- Ruff `E4,E7,E9,F`: clean across `src`, `tests`, `scripts`.
+- `python -m compileall -q src tests scripts`: clean.
+- `node --check` and `node --test`: clean (3 JavaScript tests).
+- Wheel build: `dist/enan_ultra_telegram_ai-0.1.0-py3-none-any.whl`, 62 files.
+- All Mini App assets present in the wheel (3 static files + 10 themes).
+- `scripts/validate_config.py`: `.env.example` documents 138 unique keys; the
+  Settings loader accepts documented defaults and rejects invalid
+  `ACCESS_MODE`/allowlist combinations.
+- Workflow YAML and repository JSON parse successfully.
 
-### Windows ⚠️ PARTIAL
-- No native service management (NSSM or similar required)
-- Named pipe paths now configurable but untested
-- Docker Desktop required for sandbox
-- File permissions (`chmod`) only applied on POSIX
+## Linux (Ubuntu/Debian) — configured, not deployed here
 
-### Docker ✅ PASS
-- Wheel builds successfully (61 files including web assets)
-- Multi-arch potential (pure Python + binary wheels for opencv, etc.)
-- No hardcoded absolute paths in container context
+- `deploy/telegram-ai.service`, `deploy/telegram-ai-deploy.service`/`.socket`,
+  and `deploy/install_ubuntu.sh` are present.
+- Deployment broker and health-check/rollback code are present; no live host was
+  touched in this review.
+- systemd units and installer were **not executed** on a Linux host here.
 
-## Configuration Validation
-- ✅ `.env.example` documents all 143 settings
-- ✅ `config.py` validates all inputs with clear errors
-- ✅ Required secrets: `TELEGRAM_BOT_TOKEN`, `ADMIN_CHAT_ID`, `ADMIN_USER_IDS`, `APP_DATA_KEY`, `DASHBOARD_AUTH_TOKEN`
-- ✅ At least one AI provider must be configured
+## Windows
 
-## Database & Migration
-- ✅ SQLite with WAL mode, foreign keys
-- ✅ Idempotent migrations up to v46
-- ✅ Encrypted backup/restore (`backup_encrypted_to`)
-- ✅ Online backup API (preserves WAL)
+- Python 3.15 test run succeeds locally.
+- No native service installer; POSIX permission calls are skipped.
+- Named-pipe paths for the deployment broker/ClamAV are configurable but were not
+  exercised against a Windows service/daemon in this review.
 
-## Health & Monitoring
-- ✅ `/healthz` endpoints on dashboard & Mini App
-- ✅ Resource metrics (disk, memory) via `health_snapshot`
-- ✅ Provider circuit breakers with cooldown
-- ✅ Admin alerts for provider failures (10-min rate limit)
+## Database and migrations
 
-## Rollback Capability
-- ✅ Systemd `Restart=always` with `RestartSec=5`
-- ✅ Deployment broker preserves pre-deployment snapshot
-- ✅ Health check rollback on failed restart
-- ✅ Immutable release artifacts with hash verification
+- SQLite WAL mode, foreign keys, 5-second busy timeout.
+- Migrations are forward-only and idempotent; highest schema version is **17**.
+- Migration 17 seeds the global access mode; the previous unbound-placeholder bug
+  is fixed.
+- Restore/rollback of a production database was **not** executed here.
 
-## Gaps & Action Items
-| Item | Priority | Status |
-| :--- | :---: | :--- |
-| Windows service installer | Medium | Not implemented |
-| Load testing | Low | Not performed |
-| Blue/green deployment | Low | Not implemented |
-| Database migration rollback test | Medium | Not tested |
+## Configuration
+
+- `.env.example` has 138 keys and is checked against literal keys referenced by
+  `config.py`.
+- Required secrets: `TELEGRAM_BOT_TOKEN`, `ADMIN_CHAT_ID`, `ADMIN_USER_IDS`,
+  `APP_DATA_KEY`, `DASHBOARD_AUTH_TOKEN`, plus at least one provider credential.
+- `ACCESS_MODE` defaults to `public` but cannot override the persisted PRIVATE
+  mode.
+
+## Health, rollback, and security
+
+- `/healthz` exists on the Mini App; dashboard health snapshots exist.
+- Provider circuit breakers, admin alerts, encrypted backup and audit-chain
+  verification are implemented.
+- CodeQL and dependency-review workflows are configured; results are unknown
+  until they run on GitHub.
+- Branch protection, secret scanning, and Dependabot PR status were **not**
+  verifiable from this environment.
 
 ## Verdict
-**READY FOR LINUX PRODUCTION DEPLOYMENT** with standard operational procedures.
+
+**Locally verified for test/static/build readiness.** Linux deployment remains
+conditional on executing the deployment runbook on an authorized host, and
+GitHub-side settings remain unverified.
+
+## Open items
+
+| Item | Status |
+| --- | --- |
+| Run CI workflows on GitHub | Not run here |
+| Branch protection / required reviews | Not verified |
+| Dependabot PRs #15–#19 | Not inspected (no GitHub access) |
+| Migration rollback test | Not performed |
+| Live Telegram Bot API smoke test | Not performed |
+| Linux systemd install/restart | Not performed |

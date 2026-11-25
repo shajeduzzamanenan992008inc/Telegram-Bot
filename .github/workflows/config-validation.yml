@@ -3,20 +3,16 @@ name: GitHub Configuration Validation
 on:
   push:
     paths:
-      - "GUARDIAN-X/.github/**"
-      - "GUARDIAN-X/devkit/agents/**"
-      - "GUARDIAN-X/devkit/health/**"
-      - "GUARDIAN-X/link/templates/**"
-      - "GUARDIAN-X/_dev/tools/**"
-      - "GUARDIAN-X/SECURITY.md"
+      - ".github/**"
+      - ".env.example"
+      - "src/enan_ultra/config.py"
+      - "scripts/validate_config.py"
   pull_request:
     paths:
-      - "GUARDIAN-X/.github/**"
-      - "GUARDIAN-X/devkit/agents/**"
-      - "GUARDIAN-X/devkit/health/**"
-      - "GUARDIAN-X/link/templates/**"
-      - "GUARDIAN-X/_dev/tools/**"
-      - "GUARDIAN-X/SECURITY.md"
+      - ".github/**"
+      - ".env.example"
+      - "src/enan_ultra/config.py"
+      - "scripts/validate_config.py"
   workflow_dispatch:
 
 permissions:
@@ -28,19 +24,60 @@ concurrency:
 
 jobs:
   validate:
-    name: Validate YAML, JSON, Copilot frontmatter, and workflow safety
+    name: Validate configuration and workflow safety
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       contents: read
-    defaults:
-      run:
-        working-directory: GUARDIAN-X
     steps:
       - name: Checkout without persisted credentials
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      - name: Validate GitHub configuration
-        run: ruby _dev/tools/validate_config.rb
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: |
+          uv sync --locked --python 3.13 --group build --group test
+          python -m pip install pyyaml==6.0.3
+
+      - name: Validate configuration
+        run: uv run --locked --python 3.13 python scripts/validate_config.py
+
+      - name: Validate YAML and JSON files
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          import yaml
+
+          failures = []
+          for path in sorted(Path(".github/workflows").glob("*.yml")):
+              try:
+                  document = yaml.safe_load(path.read_text(encoding="utf-8"))
+              except yaml.YAMLError as exc:
+                  failures.append(f"{path}: {exc}")
+                  continue
+              if not isinstance(document, dict) or "jobs" not in document:
+                  failures.append(f"{path}: missing jobs")
+              for job_name, job in (document.get("jobs") or {}).items():
+                  if not isinstance(job, dict) or "runs-on" not in job:
+                      failures.append(f"{path}: job {job_name} has no runs-on")
+          for path in sorted(Path(".github").rglob("*.json")):
+              try:
+                  json.loads(path.read_text(encoding="utf-8"))
+              except json.JSONDecodeError as exc:
+                  failures.append(f"{path}: {exc}")
+          if failures:
+              print("\n".join(failures))
+              raise SystemExit(1)
+          print("workflow and JSON configuration valid")
+          PY

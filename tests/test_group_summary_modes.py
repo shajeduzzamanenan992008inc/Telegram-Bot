@@ -123,6 +123,7 @@ def test_task_plan_uses_local_privacy_and_persists_dependencies(tmp_path: Path) 
         db = Database(tmp_path / "assistant.sqlite3")
         await db.open()
         try:
+            await db.set_global_access_mode("public", 0)
             router = Router()
             settings = SimpleNamespace(
                 cooldown_seconds=0, user_daily_request_limit=10, max_daily_cost_usd=1.0,

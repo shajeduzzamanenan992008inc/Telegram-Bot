@@ -1,4 +1,4 @@
-name: OGX Code Security
+name: Telegram Bot Code Security
 
 on:
   push:
