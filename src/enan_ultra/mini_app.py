@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from enan_ultra.config import Settings
-from enan_ultra.security import is_authorized
+from enan_ultra.access_control import AccessControlService
 from enan_ultra.services.conversation import bound_history
 from enan_ultra.services.theme_engine import AdaptiveThemeEngine, ThemeDecision
 from enan_ultra.storage.database import Database
@@ -80,12 +80,14 @@ class MiniAppServer:
     def __init__(
         self, settings: Settings, db: Database, router: Any, handlers: Any,
         theme_engine: AdaptiveThemeEngine | None = None,
+        access_control: AccessControlService | None = None,
     ) -> None:
         self.settings = settings
         self.db = db
         self.router = router
         self.handlers = handlers
         self.theme_engine = theme_engine or AdaptiveThemeEngine()
+        self.access_control = access_control or AccessControlService(settings, db)
         self.public_url = urlsplit(settings.mini_app_url)
         self.public_host = self.public_url.netloc.lower()
         self.public_origin = f"{self.public_url.scheme}://{self.public_host}"
@@ -266,7 +268,8 @@ class MiniAppServer:
             prompt = prompt.strip()
             if len(prompt) > self.settings.max_input_chars:
                 raise HTTPException(status_code=413, detail="Message is too long")
-            if not is_authorized(self.settings, user_id):
+            allowed, reason = await self.access_control.is_access_allowed(user_id)
+            if not allowed or await self.db.is_user_blocked(user_id):
                 raise HTTPException(status_code=403, detail="This account is not authorized")
             if await self.db.is_user_blocked(user_id):
                 raise HTTPException(status_code=403, detail="This account is blocked")
@@ -331,26 +334,17 @@ class MiniAppServer:
 
         return app
 
-    async def _authenticate(self, request: Request) -> dict[str, Any]:
-        authorization = request.headers.get("authorization", "")
-        if not authorization.startswith("tma "):
-            raise HTTPException(status_code=401, detail="Open this workspace from Telegram")
-        raw = authorization[4:]
-        try:
-            user = validate_init_data(raw, self.settings.telegram_token)
-        except ValueError as exc:
-            raise HTTPException(status_code=401, detail="Telegram session is invalid or expired") from exc
-        user_id = int(user["id"])
-        now = time.monotonic()
-        bucket = self.rate_windows[user_id]
-        while bucket and now - bucket[0] > 60:
-            bucket.popleft()
-        if len(bucket) >= 120:
-            raise HTTPException(status_code=429, detail="Too many requests; wait a moment")
-        bucket.append(now)
-        if not is_authorized(self.settings, user_id) or await self.db.is_user_blocked(user_id):
-            raise HTTPException(status_code=403, detail="This account is not authorized")
-        return user
+    def __init__(
+        self, settings: Settings, db: Database, router: Any, handlers: Any,
+        access_control: AccessControlService | None = None,
+    ) -> None:
+        self.settings = settings
+        self.db = db
+        self.router = router
+        self.handlers = handlers
+        self.theme_engine = theme_engine or AdaptiveThemeEngine()
+        self.access_control = access_control or AccessControlService(settings, db)
+        self.public_url = urlsplit(settings.mini_app_url)
 
     @staticmethod
     async def _read_json(request: Request) -> dict[str, Any]:

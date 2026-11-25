@@ -1,0 +1,13 @@
+# TEMPLATE ONLY. Copy to .github/CODEOWNERS and replace placeholders with real owners.
+# CODEOWNERS uses GitHub usernames or teams; do not activate this file unchanged.
+
+# Global fallback:
+* @YOUR-TEAM
+
+# Security-sensitive configuration:
+/.github/ @YOUR-PLATFORM-TEAM
+/.github/workflows/ @YOUR-PLATFORM-TEAM @YOUR-SECURITY-TEAM
+
+# Example ownership by product area (edit or delete):
+/src/ @YOUR-ENGINEERING-TEAM
+/docs/ @YOUR-DOCS-TEAM

@@ -1,0 +1,18 @@
+# EXAMPLE ONLY. Copy to .github/workflows/python.yml after verifying Python version,
+# dependency install command, test command and package layout. Pin actions to verified SHAs.
+name: Python CI (example)
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@<VERIFIED_40_CHARACTER_COMMIT_SHA>
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@<VERIFIED_40_CHARACTER_COMMIT_SHA>
+        with:
+          python-version: "<PROJECT_SUPPORTED_VERSION>"
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m pytest -q

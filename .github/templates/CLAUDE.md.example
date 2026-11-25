@@ -1,0 +1,5 @@
+# Project Instructions for Claude-Compatible Agents
+
+Read `.github/copilot-instructions.md` for the full repository engineering, security, testing, and operations policy. Confirm that the current agent harness loads this linked file; otherwise copy the relevant rules into this file.
+
+Always inspect the actual project stack and commands. Preserve existing architecture and user changes. Do not invent files, capabilities, test results, compliance status, or successful deployments. Ask before destructive, externally visible, costly, or production-impacting actions. Report evidence and limitations.
