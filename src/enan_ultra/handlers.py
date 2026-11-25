@@ -32,7 +32,7 @@ from telegram.ext import (
     TypeHandler, filters,
 )
 
-from enan_ultra.access_control import AccessControlService, AccessDeniedError
+from enan_ultra.access_control import AccessControlService
 from enan_ultra.actions import ActionContext, ActionRegistry
 from enan_ultra.config import Settings
 from enan_ultra.files.registry import FileRegistry
@@ -88,8 +88,6 @@ USER_FACT_PATTERNS = (
     ("response_preference", re.compile(r"আমি চাই(?: যে)?\s+([^\n.!?।]{1,160})")),
 )
 
-
-from enan_ultra.access_control import AccessControlService, AccessDeniedError
 
 class BotHandlers:
     def __init__(
@@ -153,7 +151,8 @@ class BotHandlers:
             "reset": self.reset, "clear": self.reset, "clearuser": self.clear_user_memory,
             "resetuser": self.clear_user_memory, "live": self.live,
             "exit": self.exit_live, "voice": self.voice, "make_sticker": self.make_sticker,
-            "summary": self.summary, "setmode": self.set_mode, "read": self.read_page,
+            "summary": self.summary, "setmode": self.set_mode,
+            "read": self.read_page,
             "media": self.media_preference,
             "style": self.style, "language": self.language, "memory": self.memory, "remember": self.remember,
             "format": self.response_format,
@@ -162,7 +161,6 @@ class BotHandlers:
             "forget_files": self.forget_files, "web": self.web,
             "image": self.imagine, "imagine": self.imagine,
             "usage": self.usage, "remind": self.remind, "reminders": self.reminders,
-            "setmode": self.set_global_mode,
             "cancelreminder": self.cancel_reminder, "model": self.model,
             "snooze": self.snooze_reminder,
             "search": self.live_search, "research": self.live_search,
@@ -237,8 +235,10 @@ class BotHandlers:
             return False
         if update.effective_chat and update.effective_chat.id == self.settings.admin_chat_id and not is_admin(self.settings, user.id):
             return False
-        # Enforce global Private/Public mode
-        if not await self.access_control.enforce_private_mode_for_update(update):
+        # Enforce global Private/Public mode. Data-rights commands that
+        # deliberately serve blocked users (allow_blocked) are not gated by the
+        # ordinary-user access policy.
+        if not allow_blocked and not await self.access_control.enforce_private_mode_for_update(update):
             return False
         if not is_authorized(self.settings, user.id):
             await msg.reply_text("You are not authorized to use this bot.")
@@ -918,9 +918,9 @@ class BotHandlers:
         chat = update.effective_chat
         if not query or not user or not chat:
             return
+        allowed, _reason = await self.access_control.is_access_allowed(user.id)
         if (
-            not is_authorized(self.settings, user.id)
-            or await self.db.is_user_blocked(user.id)
+            not allowed
             or (chat.id == self.settings.admin_chat_id and not is_admin(self.settings, user.id))
         ):
             await query.answer("You are not authorized to use this bot.", show_alert=True)
@@ -1137,17 +1137,25 @@ class BotHandlers:
             )
 
     async def set_mode(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Dispatch /setmode between global access mode and per-chat assistant mode."""
         if not await self._gate(update):
             return
         chat = update.effective_chat
         if not chat:
+            return
+        if context.args and len(context.args) == 1 and context.args[0].lower() in {
+            "private", "public",
+        }:
+            # Global mode is admin-only; set_global_mode performs that check.
+            await self.set_global_mode(update, context)
             return
         modes = set(CHAT_MODE_PROMPTS)
         if context.args:
             selected = context.args[0].lower()
             if selected not in modes or len(context.args) != 1:
                 await update.effective_message.reply_text(
-                    "Usage: /setmode default|sarcastic|anime|professional|regional"
+                    "Usage: /setmode default|sarcastic|anime|professional|regional "
+                    "(or /setmode private|public for admins)"
                 )
                 return
             await self.db.set_chat_mode(chat.id, selected)

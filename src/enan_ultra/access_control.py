@@ -17,43 +17,57 @@ class AccessControlService:
         self.db = db
 
     async def is_private_mode(self) -> bool:
-        """Check if the global access mode is set to private."""
+        """Check if the global access mode is set to private.
+
+        Raises when the authoritative mode cannot be read so callers can fail
+        closed rather than silently assume public access.
+        """
         mode = await self.db.get_global_access_mode()
+        if mode not in {"private", "public"}:
+            raise ValueError(f"Unrecognized global access mode: {mode!r}")
         return mode == "private"
 
     async def is_access_allowed(self, user_id: int) -> tuple[bool, str]:
         """
         Check if a user is allowed to access protected bot functionality.
-        
+
+        Trusted administrators always pass. Everyone else is checked against
+        the database-persisted global mode, which is authoritative: local
+        ``ACCESS_MODE`` configuration can never bypass a database PRIVATE mode.
+        When that mode cannot be read, access is denied (fail closed).
+
         Returns:
             tuple: (allowed, reason) where reason explains the denial if not allowed.
         """
-        # Always allow administrators
+        # Always allow administrators (they must retain recovery access).
         if is_admin(self.settings, user_id):
             return True, "admin"
-        
-        # If access_mode is explicitly "public" in settings, allow access
-        # (this maintains backward compatibility with existing configuration)
-        if getattr(self.settings, "access_mode", "public") == "public":
-            # Still check if user is blocked
+
+        # The database-persisted global mode is authoritative. Read it before
+        # any ordinary-user authorization and fail closed on error.
+        try:
+            mode = await self.db.get_global_access_mode()
+        except Exception:
+            return False, "mode_unavailable"
+        if mode not in {"private", "public"}:
+            return False, "mode_unavailable"
+
+        # Blocked users are denied in both modes.
+        try:
             if await self.db.is_user_blocked(user_id):
                 return False, "blocked"
-            return True, "allowed"
-        
-        # Check if user is blocked
-        if await self.db.is_user_blocked(user_id):
-            return False, "blocked"
-        
-        # Check global access mode (database-persisted)
-        private_mode = await self.is_private_mode()
-        if private_mode:
+        except Exception:
+            return False, "mode_unavailable"
+
+        if mode == "private":
             return False, "private_mode"
-        
-        # Check existing authorization
+
+        # PUBLIC mode restores access only according to the existing
+        # authorization policy (ACCESS_MODE=allowlist still restricts users).
         from enan_ultra.security import is_authorized
         if not is_authorized(self.settings, user_id):
             return False, "unauthorized"
-        
+
         return True, "allowed"
 
     async def require_access(self, user_id: int) -> None:
@@ -78,6 +92,11 @@ class AccessControlService:
                 raise AccessDeniedError(
                     "You are not authorized to use this bot.",
                     reason="unauthorized"
+                )
+            elif reason == "mode_unavailable":
+                raise AccessDeniedError(
+                    "Access cannot be verified right now. Please try again later.",
+                    reason="mode_unavailable"
                 )
             else:
                 raise AccessDeniedError(
@@ -108,6 +127,10 @@ class AccessControlService:
                 await msg.reply_text("Your access to this bot has been restricted.")
             elif reason == "unauthorized":
                 await msg.reply_text("You are not authorized to use this bot.")
+            elif reason == "mode_unavailable":
+                await msg.reply_text(
+                    "Access cannot be verified right now. Please try again later."
+                )
             return False
         
         return True

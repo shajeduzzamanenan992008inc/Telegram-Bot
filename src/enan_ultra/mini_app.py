@@ -334,17 +334,29 @@ class MiniAppServer:
 
         return app
 
-    def __init__(
-        self, settings: Settings, db: Database, router: Any, handlers: Any,
-        access_control: AccessControlService | None = None,
-    ) -> None:
-        self.settings = settings
-        self.db = db
-        self.router = router
-        self.handlers = handlers
-        self.theme_engine = theme_engine or AdaptiveThemeEngine()
-        self.access_control = access_control or AccessControlService(settings, db)
-        self.public_url = urlsplit(settings.mini_app_url)
+    async def _authenticate(self, request: Request) -> dict[str, Any]:
+        authorization = request.headers.get("authorization", "")
+        if not authorization.startswith("tma "):
+            raise HTTPException(status_code=401, detail="Open this workspace from Telegram")
+        raw = authorization[4:]
+        try:
+            user = validate_init_data(raw, self.settings.telegram_token)
+        except ValueError as exc:
+            raise HTTPException(status_code=401, detail="Telegram session is invalid or expired") from exc
+        user_id = int(user["id"])
+        now = time.monotonic()
+        bucket = self.rate_windows[user_id]
+        while bucket and now - bucket[0] > 60:
+            bucket.popleft()
+        if len(bucket) >= 120:
+            raise HTTPException(status_code=429, detail="Too many requests; wait a moment")
+        bucket.append(now)
+        # The database-persisted global mode is authoritative for every request,
+        # including previously issued initData and existing browser sessions.
+        allowed, _reason = await self.access_control.is_access_allowed(user_id)
+        if not allowed:
+            raise HTTPException(status_code=403, detail="This account is not authorized")
+        return user
 
     @staticmethod
     async def _read_json(request: Request) -> dict[str, Any]:

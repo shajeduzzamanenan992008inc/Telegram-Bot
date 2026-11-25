@@ -35,7 +35,7 @@ PUBLIC_COMMANDS = (
     BotCommand("voice", "Toggle voice replies"),
     BotCommand("make_sticker", "Turn a photo into a sticker"),
     BotCommand("summary", "Summarize recent group chat"),
-    BotCommand("setmode", "Set this chat's assistant mode"),
+    BotCommand("setmode", "Set chat mode or global private/public (admins)"),
     BotCommand("read", "Summarize a public webpage"),
     BotCommand("media", "Toggle media processing"),
     BotCommand("style", "Set reply style"),

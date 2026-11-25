@@ -1,5 +1,22 @@
 # Known Limitations — Telegram-Bot
 
+## Access Control
+
+- **Global only**: Private/Public is one global database row; there is no
+  per-chat or per-user global override.
+- **Private ignores the allowlist**: `ALLOWED_USER_IDS` does not grant access in
+  PRIVATE mode; it only filters users in PUBLIC mode.
+- **Admins always pass**: a blocked administrator is still allowed, by design, so
+  recovery remains possible.
+- **Fail-closed availability**: if the mode row cannot be read, ordinary users
+  receive `mode_unavailable` until the database is healthy.
+- **Rejected mode changes are not audited**: only successful changes produce
+  `global_access_mode.change` audit events.
+- **Background work**: jobs that do not call `AccessControlService` perform no
+  mode check of their own.
+- **Data-rights exemption**: `/privacy` intentionally serves blocked users so
+  they can export or delete their own data.
+
 ## Platform Support
 
 ### Windows
@@ -18,6 +35,8 @@
 | Browser/E2E Tests | ❌ None | Dashboard & Mini App not tested in real browser |
 | Load/Performance | ❌ None | No concurrent user simulation |
 | Database Migration Rollback | ❌ Not tested | Forward-only migrations; no downgrade path tested |
+| Access-control mode enforcement | ✅ Covered | 27 real database/integration tests (commands, callbacks, Mini App auth, multi-connection, concurrency, fail-closed) |
+| GitHub Actions execution | ❌ Not run here | Workflows repaired and locally YAML-validated only |
 | Network Partition | ❌ None | No chaos engineering tests |
 | Cross-Version Upgrade | ❌ Manual | No automated upgrade testing between releases |
 
@@ -30,7 +49,7 @@
 - **Image Generation**: OpenRouter only; no local diffusion models
 
 ### Telegram Integration
-- **Webhook Only**: No webhook mode implemented (polling only)
+- **Polling Only**: No webhook mode is implemented or tested
 - **No MTProto**: Uses Bot API only; no raw MTProto support
 - **Group Chat Limits**: No federation/multi-group coordination
 

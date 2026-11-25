@@ -775,7 +775,7 @@ class Database:
                 updated_at TEXT NOT NULL
             );
             INSERT OR IGNORE INTO global_access_mode(id, mode, updated_by, updated_at)
-            VALUES(1, 'private', 0, ?);
+            VALUES(1, 'private', 0, CURRENT_TIMESTAMP);
             """
         )
         await db.execute(
@@ -1405,8 +1405,13 @@ class Database:
         """Set the global access mode atomically. mode must be 'private' or 'public'."""
         if mode not in ("private", "public"):
             raise ValueError("Global access mode must be 'private' or 'public'")
+        # Upsert so a missing singleton row (for example after an interrupted
+        # migration) cannot silently make mode changes a no-op.
         await self._db().execute(
-            "UPDATE global_access_mode SET mode=?, updated_by=?, updated_at=? WHERE id=1",
+            "INSERT INTO global_access_mode(id, mode, updated_by, updated_at) "
+            "VALUES(1, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET mode=excluded.mode, "
+            "updated_by=excluded.updated_by, updated_at=excluded.updated_at",
             (mode, updated_by, utc_now().isoformat()),
         )
         await self._db().commit()

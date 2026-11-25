@@ -133,6 +133,7 @@ def test_mini_app_auth_theme_preferences_streaming_and_user_isolation(tmp_path: 
             allowed_user_ids=frozenset(),
             effective_admin_user_ids=frozenset(),
         )
+        await db.set_global_access_mode("public", 0)
         service = MiniAppServer(settings, db, Router(), Handlers())
         transport = httpx.ASGITransport(app=service.app)
         now = int(__import__("time").time())

@@ -2,74 +2,79 @@
 
 ## Pre-Release Verification
 
-### Code Quality
-- [x] All tests pass (295/295)
-- [x] Ruff linting clean (E4,E7,E9,F)
+### Code Quality (verified 2026-11-25)
+
+- [x] Full pytest suite passes — 322 tests
+- [x] Ruff (`E4,E7,E9,F`) clean across `src`, `tests`, `scripts`
 - [x] Python compile check passes
 - [x] JavaScript syntax check passes
-- [x] JavaScript tests pass (3/3)
-- [x] Wheel builds successfully (61 files)
-- [x] Web assets verified in wheel
+- [x] JavaScript tests pass (3)
+- [x] Wheel builds (`enan_ultra_telegram_ai-0.1.0-py3-none-any.whl`, 62 files)
+- [x] Mini App assets verified in the wheel (static files + 10 themes)
+- [x] Configuration validation (`scripts/validate_config.py`) passes
 
 ### Security
-- [x] No hardcoded secrets
-- [x] SQL injection prevented (parameterized queries)
-- [x] SSRF protection implemented
-- [x] Path traversal prevention in ZIP handling
-- [x] CSP headers present (review recommended)
-- [x] Admin authentication via HMAC
-- [x] Secrets loaded from `.env` only
+
+- [x] Private/Public bypass fixed: database mode precedes ordinary-user checks
+- [x] Fail-closed behavior when the persisted mode cannot be read
+- [x] Global mode row seeded/upserted correctly (migration 17)
+- [x] `/setmode` command collision removed
+- [x] Mode-specific regression tests (27) pass
+- [ ] CodeQL results reviewed (runs on GitHub; not run here)
+- [ ] Dependency audit (`pip-audit`) run against the lock (CI job; not run here)
+- [ ] Branch protection and secret scanning verified (GitHub settings)
 
 ### Documentation
-- [x] ENGINEERING_BASELINE.md
-- [x] FULL_REPOSITORY_AUDIT.md
-- [x] BUG_FIX_REPORT.md
-- [x] SECURITY_AUDIT.md
-- [x] SECURITY_HARDENING.md
-- [x] TESTING_REPORT.md
-- [x] DEPLOYMENT_READINESS_REVIEW.md
-- [x] PRODUCTION_RUNBOOK.md
-- [x] BACKUP_AND_RESTORE.md
-- [x] RELEASE_CHECKLIST.md
-- [x] KNOWN_LIMITATIONS.md
-- [x] FINAL_ENGINEERING_REPORT.md
+
+- [x] `docs/ACCESS_CONTROL_MODES.md`
+- [x] `docs/PRIVATE_PUBLIC_MODE_SECURITY.md`
+- [x] `docs/PRIVATE_PUBLIC_MODE_TEST_REPORT.md`
+- [x] `docs/DEPLOYMENT_READINESS_REVIEW.md`
+- [x] `docs/KNOWN_LIMITATIONS.md`
+- [x] `docs/FINAL_ENGINEERING_REPORT.md`
+- [x] `docs/RELEASE_CHECKLIST.md`
 
 ### Configuration
-- [x] `.env.example` complete (143 settings)
-- [x] All required variables documented
-- [x] Default values sensible
-- [x] Validation errors clear
+
+- [x] `.env.example` has 138 unique keys and matches literal loader keys
+- [x] Required variables documented
+- [x] Invalid `ACCESS_MODE` / empty allowlist rejected by the loader
 
 ### CI/CD
-- [x] Multi-Python test matrix (3.11-3.15)
-- [x] Dependency audit (pip-audit)
-- [x] CodeQL security scanning
-- [x] Config validation workflow
-- [x] Dependency review on PRs
+
+- [x] `ci.yml` targets this repository (Python 3.11–3.15 matrix, pytest, ruff,
+      compile, JS, dependency audit, wheel, Mini App assets, config validation)
+- [x] `config-validation.yml` validates this repository's YAML/JSON/settings
+- [x] `security.yml` CodeQL configuration retained
+- [x] `dependency-review.yml` retained
+- [ ] Workflows executed successfully on GitHub (not run from this workspace)
 
 ## Release Process
 
-1. **Version Bump**: Update `pyproject.toml` version
-2. **Changelog**: Update `CHANGELOG.md`
-3. **Tag**: `git tag -a v<version> -m "Release v<version>"`
+1. **Version bump**: update `pyproject.toml` and `CHANGELOG.md`
+2. **Verify**: `python -m pytest -q`
+3. **Lint**: `uvx ruff@0.17.1 check --select E4,E7,E9,F src tests scripts`
 4. **Build**: `uv build --wheel --no-sources`
-5. **Verify**: `python verify_wheel.py`
-6. **Publish**: `uv publish` (if configured)
+5. **Inspect wheel** for static assets and absence of tests/secrets
+6. **Tag**: `git tag -a v<version> -m "Release v<version>"`
+7. **Publish/deploy only with explicit authorization**
 
 ## Post-Release
-- [ ] Deploy to staging
-- [ ] Smoke test staging
-- [ ] Deploy to production
-- [ ] Monitor for 1 hour
-- [ ] Update runbook if needed
+
+- [ ] Deploy to staging (authorized host)
+- [ ] Smoke test Telegram commands, `/setmode`, Mini App
+- [ ] Deploy to production (authorized)
+- [ ] Monitor health and logs
 
 ## Rollback Criteria
+
 - Provider circuit breakers > 50% open
 - Error rate > 5%
 - Database migration failure
 - Health check failure > 3 consecutive
 
 ## Sign-Off
+
 - [ ] Engineering Lead: _______________ Date: ____
 - [ ] Security Review: _______________ Date: ____
 - [ ] Operations: _______________ Date: ____

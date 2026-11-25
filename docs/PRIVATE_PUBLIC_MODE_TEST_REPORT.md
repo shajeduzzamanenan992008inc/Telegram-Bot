@@ -1,110 +1,74 @@
 # Private/Public Mode Test Report
 
-## Test Baseline
+Verified locally on Windows, Python 3.15.2, on 2026-11-25.
 
-- **Existing test suite**: 74 test items collected (before fixing import errors)
-- **New tests added**: 15 tests in `tests/test_private_public_mode.py`
-- **Existing tests passing**: 17 of 18 (1 pre-existing failure unrelated to changes)
-- **New tests passing**: 15 of 15
+## Result
 
-## Test Results Summary
+- **Full pytest suite**: `322 passed` (`python -m pytest -q`), 0 failed.
+- **Restored regression file**: `tests/test_final_upgrade.py` — 45 tests, all
+  passing (file restored from commit `47067e7`, reconciled with current APIs).
+- **Mode-specific tests**: 27 passing across:
+  - `tests/test_private_public_mode.py` (21)
+  - `tests/test_private_public_enforcement.py` (6)
 
-### New Private/Public Mode Tests (`tests/test_private_public_mode.py`)
+## What is covered
 
-| Test Category | Tests | Result |
-|---|---|---|
-| Access Control Logic | 5 | 5 passed |
-| AccessDeniedError Messages | 3 | 3 passed |
-| Set Mode Commands | 7 | 7 passed |
-| **Total** | **15** | **15 passed** |
+### Real database and real service
 
-### Existing Tests (Regression)
+`tests/test_private_public_mode.py` builds `Settings` through the real loader and
+`Database` in a temporary directory, then uses the real `AccessControlService`:
 
-| Test File | Tests | Result |
-|---|---|---|
-| `tests/test_access_policy.py` | 2 | 2 passed |
-| `tests/test_mini_app.py` | 4 | 3 passed, 1 pre-existing failure (ANTHROPIC_BASE_URL) |
-| `tests/test_telegram_messages.py` | 12 | 12 passed |
-| **Total** | **18** | **17 passed** |
+- PRIVATE database mode + `ACCESS_MODE=public` → ordinary and allowlisted users
+  denied `private_mode`; admin allowed.
+- PRIVATE database mode + `ACCESS_MODE=allowlist` → same denial.
+- PUBLIC database mode + `ACCESS_MODE=public` → allowed; blocked user denied.
+- PUBLIC database mode + `ACCESS_MODE=allowlist` → only allowlisted user allowed.
+- Unreadable mode → `mode_unavailable`; admin still allowed; `require_access`
+  raises with that reason.
+- Unrecognized persisted mode → fail closed.
+- Fresh database defaults to PRIVATE.
+- Mini App `initData` signature validation plus global-mode re-check.
 
-### Test Coverage
+### Entry points and concurrency
 
-#### Private Mode Tests
+`tests/test_private_public_enforcement.py`:
 
-- ✅ Non-admin users are blocked in Private Mode
-- ✅ Administrators are allowed in Private Mode
-- ✅ Private mode denies non-admins even when access_mode setting is "private"
-- ✅ Administrators bypass Private Mode restrictions
-- ✅ Blocked users are always denied regardless of mode
-- ✅ Public Mode allows non-admins (backward compatibility)
-- ✅ Allowlist mode denies unknown users but allows listed ones
+- `/setmode` dispatcher: `/setmode public` changes the global mode,
+  `/setmode sarcastic` changes the chat mode without touching the global mode,
+  and a non-admin cannot change the global mode.
+- `_gate()` denies ordinary commands/messages in PRIVATE and restores them in
+  PUBLIC.
+- `menu_callback()` denies ordinary callback queries in PRIVATE and serves them
+  in PUBLIC.
+- Two `Database` connections on one file observe each other's mode changes.
+- Concurrent PRIVATE/PUBLIC changes leave a valid mode and matching decisions.
+- Mode-read failure denies ordinary users and keeps admin recovery access.
 
-#### Public Mode Tests
+### Migrations
 
-- ✅ Ordinary users have access in Public Mode
-- ✅ Admin-only functionality remains protected in Public Mode
-- ✅ Rate limiting remains active in Public Mode
-- ✅ Existing authentication rules remain intact
+`tests/test_final_upgrade.py` asserts the final schema version is 17 and that the
+`global_access_mode` table is seeded. The seeding bug (unbound placeholder) is
+covered indirectly by every test that switches to PUBLIC and reads it back.
 
-#### Persistence Tests (implied by existing DB tests)
+## Not covered / limitations
 
-- ✅ Default mode is Private (verified in database schema migration v17)
-- ✅ Mode survives restart (SQLite persistence)
-- ✅ Mode changes are atomic (SQLite WAL mode)
+- Workflows have not been executed on GitHub from this environment; only local
+  equivalents (pytest, ruff, compileall, Node checks, wheel build) were run.
+- No webhook transport test infrastructure exists; the bot uses polling.
+- Long-running background jobs are not exercised against a mode change; the
+  codebase has no user-facing background authorization path beyond handler
+  gates.
+- No browser/E2E test for the Mini App UI.
+- No Dependabot PR or branch-protection verification is possible locally.
 
-#### Regression Tests
-
-- ✅ Existing features continue working
-- ✅ Existing authentication and authorization tests pass
-- ✅ Existing database tests pass
-- ✅ Existing security tests pass
-- ✅ Existing Telegram command tests pass
-
-## Test Gaps
-
-The following areas were not fully tested due to scope:
-
-- ☐ Mini App mode enforcement under Private Mode (requires full Mini App server setup)
-- ☐ Webhook handler mode enforcement (requires test Telegram webhook infrastructure)
-- ☐ Background task mode enforcement (requires task infrastructure)
-- ☐ Multi-worker mode consistency (requires distributed test setup)
-- ☐ Cache inconsistency scenarios (no in-memory cache exists, but not tested)
-- ☐ Race condition during mode transition (SQLite atomicity tested conceptually)
-
-## Known Issues
-
-- `test_mini_app_settings_require_https_root_and_loopback` fails due to missing `ANTHROPIC_BASE_URL` environment variable — **pre-existing**, unrelated to Private/Public mode changes.
-- No tests for callback query handlers under Private Mode (covered by integration-level testing of existing handler gates).
-- No tests for direct API route mode enforcement (API routes not yet discovered in this repository).
-
-## Test Execution
+## Commands used
 
 ```bash
-# Run all Private/Public mode tests
-python -m pytest tests/test_private_public_mode.py -v
-
-# Run existing access policy tests
-python -m pytest tests/test_access_policy.py -v
-
-# Run broader test suite (excluding pre-existing failure)
-python -m pytest tests/test_access_policy.py tests/test_telegram_messages.py -v
+python -m pytest -q
+uvx ruff@0.17.1 check --select E4,E7,E9,F src tests scripts
+python -m compileall -q src tests scripts
+node --check src/enan_ultra/webapp/static/app.js
+node --test tests/test_webapp_theme_ui.cjs
+uv build --wheel --no-sources
+PYTHONPATH=src python scripts/validate_config.py
 ```
-
-## Acceptance Criteria Status
-
-✅ **Private Mode reliably blocks every ordinary user at the backend**
-✅ **Public Mode restores permitted access**
-✅ **Administrators retain secure control via /setmode command**
-✅ **Mode persistence works (SQLite database)**
-✅ **Automated tests demonstrate that bypass attempts are rejected**
-✅ **Zero data loss**
-✅ **Zero fake test results (all tests run and pass)**
-✅ **No unauthorized production deployment**
-
-## Next Steps for Full Coverage
-
-1. Add Mini App integration tests for mode enforcement
-2. Add webhook handler tests for mode enforcement
-3. Add multi-worker consistency tests
-4. Add race condition stress tests
-5. Add direct API route enforcement tests (if any routes are discovered)
