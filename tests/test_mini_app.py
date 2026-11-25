@@ -76,6 +76,64 @@ def test_mini_app_settings_require_https_root_and_loopback(tmp_path, monkeypatch
         Settings.load()
 
 
+def test_mini_app_chat_authenticates_and_checks_blocked_state_once(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        db = Database(tmp_path / "mini-app-blocked.sqlite3")
+        await db.open()
+        settings = SimpleNamespace(
+            telegram_token=TOKEN,
+            mini_app_url="https://omega.example",
+            mini_app_host="127.0.0.1",
+            mini_app_port=8788,
+            max_input_chars=1000,
+            max_output_chars=1200,
+            history_messages=12,
+            cooldown_seconds=0,
+            user_daily_request_limit=30,
+            user_monthly_request_limit=120,
+            user_monthly_cost_limit_usd=20.0,
+            max_daily_cost_usd=100.0,
+            access_mode="public",
+            allowed_user_ids=frozenset(),
+            effective_admin_user_ids=frozenset(),
+        )
+        await db.set_global_access_mode("public", 0)
+        await db.set_user_blocked(77, 0, "test block")
+
+        calls = 0
+        original = db.is_user_blocked
+
+        async def counted(user_id: int) -> bool:
+            nonlocal calls
+            calls += 1
+            return await original(user_id)
+
+        db.is_user_blocked = counted  # type: ignore[method-assign]
+        service = MiniAppServer(settings, db, SimpleNamespace(), SimpleNamespace())
+        now = int(__import__("time").time())
+        headers = {
+            "Authorization": f"tma {signed_init_data(77, now=now)}",
+            "Origin": "https://omega.example",
+            "X-Forwarded-Proto": "https",
+        }
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=service.app),
+                base_url="http://omega.example",
+            ) as client:
+                response = await client.post(
+                    "/api/v1/chat", headers=headers, json={"text": "hello"},
+                )
+            assert response.status_code == 403
+            assert calls == 1
+        finally:
+            await db.close()
+
+    asyncio.run(scenario())
+
+
 def test_mini_app_auth_theme_preferences_streaming_and_user_isolation(tmp_path: Path) -> None:
     async def scenario() -> None:
         db = Database(tmp_path / "mini-app.sqlite3")
