@@ -231,18 +231,13 @@ class BotHandlers:
         if admin and not is_admin(self.settings, user.id):
             await msg.reply_text("This command is available to authorized administrators only.")
             return False
-        if not allow_blocked and await self.db.is_user_blocked(user.id):
-            return False
         if update.effective_chat and update.effective_chat.id == self.settings.admin_chat_id and not is_admin(self.settings, user.id):
             return False
-        # Enforce global Private/Public mode. Data-rights commands that
-        # deliberately serve blocked users (allow_blocked) are not gated by the
-        # ordinary-user access policy.
-        if not allow_blocked and not await self.access_control.enforce_private_mode_for_update(update):
-            return False
-        if not is_authorized(self.settings, user.id):
-            await msg.reply_text("You are not authorized to use this bot.")
-            return False
+        # Data-rights commands that deliberately serve blocked users
+        # (allow_blocked) are exempt from the ordinary-user access policy.
+        if not allow_blocked:
+            if not await self.access_control.enforce_private_mode_for_update(update):
+                return False
         return True
 
     async def update(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1188,16 +1183,10 @@ class BotHandlers:
         await self.access_control.require_access(user_id)
         # Set the global mode atomically
         await self.db.set_global_access_mode(selected, user_id)
-        new_mode = "private" if selected == "private" else "public"
         mode_label = "🔒 PRIVATE" if selected == "private" else "🌐 PUBLIC"
         await update.effective_message.reply_text(
             f"✅ Global access mode switched to {mode_label}.\n"
             f"The change has been recorded by administrator {user_id}."
-        )
-        # Audit the mode change
-        await self.db.audit(
-            user_id, "global_access_mode.change", selected,
-            f"global access mode changed to {new_mode}"
         )
 
     async def summary(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
