@@ -101,6 +101,62 @@ def test_setmode_dispatches_global_and_chat_modes_without_collision(
     asyncio.run(scenario())
 
 
+def test_setmode_records_exactly_one_audit_event(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(tmp_path, monkeypatch, "public")
+
+    async def scenario() -> None:
+        db = Database(tmp_path / "audit.sqlite3")
+        await db.open()
+        try:
+            handlers = BotHandlers(settings, db, None, None, None, None)
+            message = _Message()
+            update = _command_update(message, ADMIN_ID)
+
+            await handlers.set_mode(update, SimpleNamespace(args=["public"]))
+
+            events = await db.recent_audit_events()
+            mode_events = [
+                event for event in events
+                if event["action"] == "global_access_mode.change"
+            ]
+            assert len(mode_events) == 1
+            assert mode_events[0]["target"] == "public"
+            assert mode_events[0]["actor_id"] == ADMIN_ID
+        finally:
+            await db.close()
+
+    asyncio.run(scenario())
+
+
+def test_gate_keeps_blocked_admin_recovery_access_and_denies_blocked_ordinary_user(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(tmp_path, monkeypatch, "public")
+
+    async def scenario() -> None:
+        db = Database(tmp_path / "blocked-gate.sqlite3")
+        await db.open()
+        try:
+            await db.set_global_access_mode("public", ADMIN_ID)
+            await db.set_user_blocked(ADMIN_ID, ADMIN_ID, "test admin block")
+            await db.set_user_blocked(ORDINARY_ID, ADMIN_ID, "test block")
+            handlers = BotHandlers(settings, db, None, None, None, None)
+
+            admin_message = _Message()
+            assert await handlers._gate(_command_update(admin_message, ADMIN_ID)) is True
+            assert admin_message.replies == []
+
+            ordinary_message = _Message()
+            assert await handlers._gate(_command_update(ordinary_message, ORDINARY_ID)) is False
+            assert "restricted" in ordinary_message.replies[-1]
+        finally:
+            await db.close()
+
+    asyncio.run(scenario())
+
+
 def test_gate_denies_ordinary_commands_and_messages_in_private_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
