@@ -12,6 +12,6 @@ Commands:
 /kb delete <ID|all>
 ```
 
-The database enforces per-user document and encrypted-byte limits. Retrieved passages are included as untrusted reference data, not instructions; source filenames/locations are retained for citation in responses. `/kb off` disables retrieval but does not delete saved items. `/kb delete all` removes them. `/privacy delete confirm` also removes user-linked KB content. Encryption/backup key requirements are described in [configuration](./CONFIGURATION.md) and the [README privacy section](../README.md#privacy-security-backups).
+The database enforces per-user document and encrypted-byte limits. Retrieved passages are included as untrusted reference data, not instructions; source filenames/locations are retained for citation in responses. `/kb off` disables retrieval but does not delete saved items. `/kb delete all` removes them. `/privacy delete confirm` also removes user-linked KB content. Encryption/backup key requirements are described in [configuration](./CONFIGURATION.md) and the [README privacy section](../README.md#defense-in-depth).
 
 Retrieval uses the repository's bounded local text-matching path; it is not an embedding/vector index and does not guarantee semantic recall or factual verification.

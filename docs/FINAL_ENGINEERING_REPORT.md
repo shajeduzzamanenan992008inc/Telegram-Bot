@@ -1,5 +1,7 @@
 # Final Engineering Report — Private/Public Mode Remediation
 
+> **Scope note.** This report describes the historical base commit `936d0e5d3c3f8a1275f128d80369bf1a86960cdd`. Test modules it names, including `tests/test_final_upgrade.py`, are not present in the current tree.
+
 - **Repository**: https://github.com/shajeduzzamanenan992008inc/Telegram-Bot.git
 - **Reviewed base commit**: `936d0e5d3c3f8a1275f128d80369bf1a86960cdd`
 - **Date**: 2026-11-25

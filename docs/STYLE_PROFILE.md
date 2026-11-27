@@ -22,4 +22,4 @@ The profile does not replace ordinary message history. Private conversation hist
 
 ## Verification limits
 
-`tests/test_style_profile.py` and the related theme/Mini App tests use temporary SQLite databases and mocked Telegram/provider paths. They do not prove Telegram live behavior, provider behavior, Azure compatibility, Linux/systemd retention execution, or production recovery.
+The current suite has no dedicated style-profile test; the database and message-pipeline tests use temporary SQLite databases and mocked Telegram/provider paths. They do not prove Telegram live behavior, provider behavior, Azure compatibility, Linux/systemd retention execution, or production recovery.

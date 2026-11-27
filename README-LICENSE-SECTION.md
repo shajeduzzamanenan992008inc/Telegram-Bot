@@ -1,6 +1,8 @@
 # README license section — adoption text
 
-Append the following section to the root `README.md` when adopting the license.
+> **Status: adopted.** The root `LICENSE` (PANC-1.1) is published on the
+default branch and the root `README.md` carries the canonical license section.
+The draft below is kept for reference only.
 
 ```markdown
 ## License

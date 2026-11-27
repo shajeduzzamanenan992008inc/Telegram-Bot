@@ -1,5 +1,7 @@
 # ENAN ULTRA Bug Root Cause Report
 
+> **Scope note.** This report describes the historical audit base `codex/admin-zip-update` @ `b989627`. Test modules it names, including `tests/test_final_upgrade.py` and `tests/test_sticker_collector.py`, are not present in the current tree.
+
 ## Audit scope
 
 - Audit date: 2026-10-17.

@@ -1,5 +1,7 @@
 # Private/Public Mode Test Report
 
+> **Scope note.** The results below describe an earlier checkout. `tests/test_final_upgrade.py`, `tests/test_private_public_mode.py` and `tests/test_private_public_enforcement.py` are not present in the current tree, so the counts here are historical evidence, not a description of today's suite.
+
 Verified locally on Windows, Python 3.15.2, on 2026-11-25.
 
 ## Result

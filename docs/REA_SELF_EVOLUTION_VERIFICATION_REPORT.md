@@ -9,6 +9,7 @@ Self-evolution-এর proposal → sandbox test → staging approval → candida
 ## Worktree অখণ্ডতা
 
 - Repository: `D:\FTP\Telegram-Bot`; branch `codex/admin-zip-update`; `HEAD` অপরিবর্তিত `1b38014cba8623ca479e880969ec81e28def7cd6`।
+- এই report-এ উল্লিখিত `tests/test_omega_mission_evolution.py`, `tests/test_final_upgrade.py`, `tests/test_action_results.py`, `tests/test_telegram_zip_updates.py`, `tests/test_telegram_deployment.py` ও `tests/test_command_menu.py` সেই checkout-এর; বর্তমান tree-তে সেগুলো নেই। তাই নিচের test command ও ফলাফল ঐতিহাসিক সাক্ষ্য, বর্তমান suite-এর প্রমাণ নয়।
 - এই পর্যায়ের প্রথম status-এ ২৮টি tracked file modified এবং ৫টি untracked file ছিল; কোনোটিই revert, stage, commit বা delete করা হয়নি। পরের status-এও মোট ৩৩টি status entry ছিল এবং `HEAD` একই।
 - এই পর্যায়ে `src/enan_ultra/handlers.py` ও `tests/test_omega_mission_evolution.py`-তে সীমিত পরিবর্তন এবং আগে থেকেই থাকা untracked এই report-এ পরিবর্তন করা হয়েছে। এগুলোর আগের dirty diff-কে এই পর্যায়ের পরিবর্তন বলে গণ্য করা হচ্ছে না।
 - কোনো database, production file, live service বা deployment state পরিবর্তন করা হয়নি; কোনো secret report-এ কপি করা হয়নি।
@@ -37,14 +38,14 @@ Self-evolution-এর proposal → sandbox test → staging approval → candida
 | `.\.venv\Scripts\python.exe -m compileall -q src\enan_ultra\handlers.py tests\test_omega_mission_evolution.py` | 0 | Python compile সফল |
 | `git diff --check` | 0 | whitespace/error check সফল |
 
-প্রাসঙ্গিক test evidence [`test_omega_mission_evolution.py`](../tests/test_omega_mission_evolution.py#L218) ও [`test_final_upgrade.py`](../tests/test_final_upgrade.py#L301)-এ। নতুন focused cases [`test_omega_mission_evolution.py`](../tests/test_omega_mission_evolution.py#L479) থেকে শুরু:
+প্রাসঙ্গিক test evidence `test_omega_mission_evolution.py` ও `test_final_upgrade.py`-এ ছিল। নতুন focused cases `test_omega_mission_evolution.py` থেকে শুরু:
 
 - Stored patch-এর বদলানো hash test result/approval-এ গ্রহণ হয় না; test failure approval বন্ধ করে; non-admin, wrong hash ও replayed state transition ব্যর্থ হয়।
 - Candidate archive-এর hash বদলে গেলে export block হয়; `.env`-যুক্ত unsafe archive এবং size limit ছাড়ানো archive export হয় না।
 - Export path-এ প্রকৃত `_gate` non-admin user-কে proposal load/audit/delivery-র আগেই থামায়।
 - Telegram document delivery `TelegramError`-এ ব্যর্থ হলে `failed:delivery` audit হয়। Coroutine cancellation-এ নতুন code `failed:delivery_interrupted` audit করে `CancelledError` পুনরায় raise করে।
 - Patch traversal/protected path/credential validation, secret file exclusion ও “silently excluded archive member” rejection বিদ্যমান tests-এ আছে।
-- Audit chain tampering test [`test_final_upgrade.py`](../tests/test_final_upgrade.py#L301)-এ রয়েছে।
+- Audit chain tampering test `test_final_upgrade.py`-এ ছিল।
 
 এই tests mock Telegram delivery ও local DB/sandbox workflow boundary-র test; এগুলো live Telegram request, rootless container বা production deployment চালানোর প্রমাণ নয়।
 

@@ -188,14 +188,11 @@ is refused while `telegram-ai.service` is active. Keep the same
 restoring into a separate staging state directory and verifying integrity and
 application health before any operational use.
 
-Implementation tests exercise encrypted backup/restore and CLI guards in
-`tests/test_final_upgrade.py::test_database_backup_restores_encrypted_kb_with_same_key`
-and `::test_backup_cli_encryption_and_legacy_restore_guard`, and WAL-aware
-online backup/restore in
-`tests/test_telegram_deployment.py::test_sqlite_online_backup_api_captures_wal_and_restores_a_copy`.
-These are automated local tests, not a real service restore drill. The repository
-does not establish a production backup destination, off-host replication,
-retention schedule, or tested live restore procedure. See
+Encrypted backup/restore, the CLI guards and WAL-aware online backup are
+implemented but not covered by an automated test in this checkout, and no real
+service restore drill has been performed. The repository does not establish a
+production backup destination, off-host replication, retention schedule, or
+tested live restore procedure. See
 [`DEPLOYMENT_AND_ROLLBACK.md`](./DEPLOYMENT_AND_ROLLBACK.md) for the documented
 staging-only procedure and operational caveats.
 
@@ -208,12 +205,11 @@ staging-only procedure and operational caveats.
 - User export/deletion commands and privacy scope:
   [`handlers.py`](../src/enan_ultra/handlers.py) and
   [`PRIVACY_AND_RETENTION.md`](./PRIVACY_AND_RETENTION.md).
-- Migration milestone/reopen check and ownership/deletion tests:
-  [`test_final_upgrade.py`](../tests/test_final_upgrade.py).
-- Task dependency isolation:
-  [`test_final_upgrade.py`](../tests/test_final_upgrade.py) and
-  [`test_mini_app.py`](../tests/test_mini_app.py).
-- Backup implementation and automated backup coverage:
-  [`database_backup.py`](../scripts/database_backup.py),
-  [`test_final_upgrade.py`](../tests/test_final_upgrade.py), and
-  [`test_telegram_deployment.py`](../tests/test_telegram_deployment.py).
+- Schema version, reopen check, history ordering, reminder leasing and
+  user-deletion audit integrity:
+  [`test_database.py`](../tests/test_database.py).
+- Task ownership and dependency checks are enforced by the `user_tasks` queries
+  in [`database.py`](../src/enan_ultra/storage/database.py); there is no
+  dedicated automated task-isolation test in this checkout.
+- Backup implementation: [`database_backup.py`](../scripts/database_backup.py);
+  no automated backup/restore test in this checkout.
