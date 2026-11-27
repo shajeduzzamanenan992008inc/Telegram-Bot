@@ -1,0 +1,10 @@
+{
+  "id": "astronomy",
+  "label": {"bn": "মহাকাশ মানমন্দির", "en": "Cosmic Observatory"},
+  "icon": "🌌",
+  "colors": {"background": "#090d24", "surface": "#171b3b", "accent": "#a7b7ff", "glow": "#7b54dc", "text": "#f6f5ff"},
+  "animation": "starfield",
+  "motion": "low",
+  "contrast": "standard",
+  "detector": {"keywords_en": ["astronomy", "space science", "galaxy", "planet", "star", "orbit", "telescope", "black hole", "black hole niye", "nebula", "solar system", "cosmology", "mohakash", "mohakas", "space niye", "blackhole", "groho", "groho gulo", "nokkhotro", "nokkhottro", "tara", "chad", "surjo", "shurjo", "shourajogot", "mohabishwo", "mohabissho"], "keywords_bn": ["জ্যোতির্বিজ্ঞান", "মহাকাশ", "গ্যালাক্সি", "গ্রহ", "নক্ষত্র", "কক্ষপথ", "দূরবীক্ষণ", "কৃষ্ণগহ্বর", "নীহারিকা", "সৌরজগৎ", "মহাবিশ্ব"]}
+}

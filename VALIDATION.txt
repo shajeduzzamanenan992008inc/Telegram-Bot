@@ -1,0 +1,17 @@
+VALIDATION RESULTS — 2026-11-27
+
+PASS: pyproject.toml parses with Python tomllib.
+PASS: project name remains enan-ultra-telegram-ai.
+PASS: Python requirement remains >=3.11,<3.16.
+PASS: build backend remains hatchling.build.
+PASS: only two metadata declarations were added to the inspected pyproject: license and license-files.
+PASS: license identifier is consistent in LICENSE and pyproject.toml.
+PASS: non-commercial, attribution, AI/ML training restriction, third-party exclusion, User Data exclusion, and effective-date language present.
+PASS: no unresolved template placeholders detected.
+PASS: adoption, README, and audit documents exist.
+
+LICENSE bytes: 14260
+LICENSE lines: 279
+LICENSE SHA-256: ebc1d6a9d392c1402dbcd3157613f76eb0198143886162e5e119e5282431c916
+
+Not performed: full project test suite, wheel build, legal review, contributor chain-of-title review, or GitHub adoption.

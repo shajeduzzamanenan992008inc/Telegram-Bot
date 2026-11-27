@@ -1,0 +1,40 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Runtime state
+data/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3.enc
+stickers_store.db
+uploads/
+user_uploads/
+backups/
+instance/
+storage/
+logs/
+*.log
+.telegram-zip-updates/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Node / editors / OS
+node_modules/
+.idea/
+.DS_Store
+Thumbs.db

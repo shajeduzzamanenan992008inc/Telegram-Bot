@@ -1,0 +1,231 @@
+name: Telegram Bot CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: telegram-bot-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  tests:
+    name: Pytest (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --locked --python ${{ matrix.python-version }} --group build --group test
+
+      - name: Install Bengali PDF fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends fonts-noto-core
+
+      - name: Run full pytest suite
+        run: uv run --locked --python ${{ matrix.python-version }} pytest -q
+
+  quality:
+    name: Static analysis and JavaScript checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --locked --python 3.13 --group build --group test
+
+      - name: Ruff
+        run: |
+          python -m pip install ruff==0.17.1
+          ruff check --select E4,E7,E9,F src tests
+
+      - name: Python compile checks
+        run: python -m compileall -q src tests scripts
+
+      - name: JavaScript syntax check
+        run: node --check src/enan_ultra/webapp/static/app.js
+
+      - name: JavaScript tests
+        run: node --test tests/test_webapp_theme_ui.cjs
+
+  dependency-audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Audit locked dependencies
+        run: |
+          uv export --locked --no-default-groups --group build --group test --no-emit-project --format requirements.txt --output-file "$RUNNER_TEMP/requirements-audit.txt"
+          uvx --from pip-audit==2.10.1 pip-audit --no-deps --requirement "$RUNNER_TEMP/requirements-audit.txt"
+
+  build:
+    name: Wheel build and Mini App assets
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Build wheel
+        run: uv build --wheel --no-sources
+
+      - name: Verify packaged Mini App assets
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          wheels = list(Path("dist").glob("*.whl"))
+          assert len(wheels) == 1, f"Expected one wheel, found {len(wheels)}"
+          required = {
+              "enan_ultra/webapp/static/index.html",
+              "enan_ultra/webapp/static/app.js",
+              "enan_ultra/webapp/static/app.css",
+          }
+          required.update(
+              f"enan_ultra/webapp/themes/{path.name}"
+              for path in Path("src/enan_ultra/webapp/themes").glob("*.json")
+          )
+          with ZipFile(wheels[0]) as wheel:
+              packaged = set(wheel.namelist())
+          missing = sorted(required - packaged)
+          assert not missing, f"Wheel is missing web assets: {missing}"
+          print(f"wheel={wheels[0]} files={len(packaged)}")
+          PY
+
+      - name: Install wheel and import the package
+        run: |
+          python -m venv "$RUNNER_TEMP/wheel-venv"
+          "$RUNNER_TEMP/wheel-venv/bin/python" -m pip install --disable-pip-version-check --no-deps dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/wheel-venv/bin/python" -c "import enan_ultra; print('import ok')"
+
+  config-validation:
+    name: Configuration validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies and YAML parser
+        run: |
+          uv sync --locked --python 3.13 --group build --group test
+          python -m pip install pyyaml==6.0.3
+
+      - name: Validate Settings documentation and behavior
+        run: uv run --locked --python 3.13 python scripts/validate_config.py
+
+      - name: Validate workflow YAML and repository JSON
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          import yaml
+
+          failures = []
+          for path in sorted(Path(".github/workflows").glob("*.yml")):
+              try:
+                  document = yaml.safe_load(path.read_text(encoding="utf-8"))
+              except yaml.YAMLError as exc:
+                  failures.append(f"{path}: {exc}")
+                  continue
+              if not isinstance(document, dict) or "jobs" not in document:
+                  failures.append(f"{path}: missing jobs")
+          for path in sorted(Path(".github").glob("*.json")) + [Path(".github/project-profile.json")]:
+              if not path.exists():
+                  continue
+              try:
+                  json.loads(path.read_text(encoding="utf-8"))
+              except json.JSONDecodeError as exc:
+                  failures.append(f"{path}: {exc}")
+          if failures:
+              print("\n".join(failures))
+              raise SystemExit(1)
+          print("workflow and JSON configuration valid")
+          PY

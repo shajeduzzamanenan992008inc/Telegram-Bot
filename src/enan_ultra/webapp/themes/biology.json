@@ -1,0 +1,10 @@
+{
+  "id": "biology",
+  "label": {"bn": "জীবকোষ পর্যবেক্ষণ", "en": "Living Cells"},
+  "icon": "🧬",
+  "colors": {"background": "#0c1c1b", "surface": "#193633", "accent": "#8ae0a0", "glow": "#2caa82", "text": "#f2fff3"},
+  "animation": "cells",
+  "motion": "low",
+  "contrast": "standard",
+  "detector": {"keywords_en": ["biology", "cell", "dna", "gene", "protein", "ecology", "evolution", "organism", "photosynthesis", "genetics", "microbiology", "jibbiggan", "jib biggan", "kosh", "jibon kosh", "jibanu", "bongshogoti", "salokshongshleshon"], "keywords_bn": ["জীববিজ্ঞান", "কোষ", "ডিএনএ", "জিন", "প্রোটিন", "বাস্তুতন্ত্র", "বিবর্তন", "জীব", "সালোকসংশ্লেষণ", "জিনতত্ত্ব", "অণুজীব"]}
+}

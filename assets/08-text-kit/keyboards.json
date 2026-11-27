@@ -1,0 +1,109 @@
+{
+  "main_menu": {
+    "inline_keyboard": [
+      [
+        {
+          "text": "⚡ Start",
+          "callback_data": "start"
+        },
+        {
+          "text": "👤 Profile",
+          "callback_data": "profile"
+        }
+      ],
+      [
+        {
+          "text": "👑 Premium",
+          "callback_data": "premium"
+        },
+        {
+          "text": "📊 Stats",
+          "callback_data": "stats"
+        }
+      ],
+      [
+        {
+          "text": "⚙️ Settings",
+          "callback_data": "settings"
+        },
+        {
+          "text": "🎧 Support",
+          "url": "https://t.me/your_support"
+        }
+      ]
+    ]
+  },
+  "premium_menu": {
+    "inline_keyboard": [
+      [
+        {
+          "text": "🥉 Basic",
+          "callback_data": "buy_basic"
+        },
+        {
+          "text": "🥈 Pro",
+          "callback_data": "buy_pro"
+        }
+      ],
+      [
+        {
+          "text": "🥇 Ultra",
+          "callback_data": "buy_ultra"
+        }
+      ],
+      [
+        {
+          "text": "⬅️ Back",
+          "callback_data": "menu"
+        }
+      ]
+    ]
+  },
+  "confirm": {
+    "inline_keyboard": [
+      [
+        {
+          "text": "✅ Confirm",
+          "callback_data": "yes"
+        },
+        {
+          "text": "❌ Cancel",
+          "callback_data": "no"
+        }
+      ]
+    ]
+  },
+  "language": {
+    "inline_keyboard": [
+      [
+        {
+          "text": "🇬🇧 English",
+          "callback_data": "lang_en"
+        },
+        {
+          "text": "🇧🇩 বাংলা",
+          "callback_data": "lang_bn"
+        }
+      ],
+      [
+        {
+          "text": "⬅️ Back",
+          "callback_data": "menu"
+        }
+      ]
+    ]
+  },
+  "reply_keyboard": {
+    "keyboard": [
+      [
+        "⚡ Start",
+        "👤 Profile"
+      ],
+      [
+        "👑 Premium",
+        "🎧 Support"
+      ]
+    ],
+    "resize_keyboard": true
+  }
+}

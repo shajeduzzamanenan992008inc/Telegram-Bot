@@ -1,0 +1,12 @@
+# Shared AI Agent Instructions
+
+This file is a cross-agent project instruction entry point. Keep it consistent with `.github/copilot-instructions.md`.
+
+1. Inspect the real repository and its project profile before making assumptions.
+2. Preserve existing architecture, user changes, public interfaces, and product identity.
+3. Use repository-native build, test, lint, and validation commands; never invent results.
+4. Follow security, privacy, least privilege, and human approval boundaries for consequential actions.
+5. Keep changes small, testable, reversible, and documented.
+6. Report exact files, commands, results, skipped checks, assumptions, and residual risks.
+
+For the complete policy, read `.github/copilot-instructions.md`. This file is a template; copy to the repository root as `AGENTS.md` when using a harness that supports it.

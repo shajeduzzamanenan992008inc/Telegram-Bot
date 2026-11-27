@@ -1,0 +1,43 @@
+TELEGRAM-BOT LICENSE ADOPTION AUDIT
+Audit date: 2026-11-27
+Repository: https://github.com/shajeduzzamanenan992008inc/Telegram-Bot
+Default branch: main
+
+VERIFIED REPOSITORY FACTS
+- Visibility: Private.
+- Default branch: main.
+- Recursive Git tree: 302 entries.
+- Current main tree SHA: e9dfb8a6286857b905486a69dc58b88ee526e9f8.
+- Root LICENSE: absent (GitHub contents API returned 404).
+- Root project: README identifies it as "Enan Ultra Telegram AI Assistant".
+- pyproject.toml project name: enan-ultra-telegram-ai.
+- Python requirement: >=3.11,<3.16.
+- Build backend: hatchling.build; pinned build dependency hatchling==1.32.4.
+- Existing .github/licensing/COMMERCIAL-LICENSE-TEMPLATE.md is explicitly
+  marked "TEMPLATE ONLY" and states it is not a complete executed agreement.
+- Recent commit metadata shows the repository owner's GitHub account as the
+  commit author on the sampled recent commits. This is not a complete audit of
+  all copyright ownership or every historical contribution.
+
+LICENSE DECISION
+- Prepared a repository-specific custom PANC-1.1 license, SPDX-style
+  identifier LicenseRef-Enan-Ultra-PANC-1.1.
+- Scope: original first-party code, docs, tests, scripts, templates, workflows,
+  and project assets only where the Licensor owns or is authorized to license
+  them.
+- Excludes: third-party dependencies/assets/services, Telegram or AI provider
+  systems, User Data (chats, uploads, user records, logs, credentials, etc.),
+  and works owned by independent contributors absent an explicit grant.
+- Non-commercial reuse is conditioned on retaining the original project and
+  creator attribution. Commercial use and AI/ML model training require prior
+  written permission. Ordinary non-commercial AI coding assistance is
+  permitted only with provider settings that do not train on submitted code.
+- No governing-law jurisdiction was invented.
+
+LIMITATIONS
+- This is a license drafting and repository-metadata preparation exercise,
+  not a legal opinion or an exhaustive chain-of-title audit.
+- Ownership of every source file, copied snippet, generated asset, and
+  external contribution has not been independently established.
+- The repository remains Private and the root LICENSE remains absent on GitHub;
+  therefore the prepared license is not active there.

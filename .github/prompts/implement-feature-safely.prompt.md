@@ -1,0 +1,3 @@
+Implement the requested feature using the actual architecture and conventions in this repository. Follow `.github/copilot-instructions.md`.
+
+First inspect repository state, affected flows, contracts, tests, and risks. Define acceptance criteria and a proportionate plan. Implement the smallest cohesive change, preserving compatibility and existing user changes. Add or update tests for normal, boundary, denied, and failure paths as relevant. Run the real repository checks and report exact commands/results, files changed, assumptions, skipped checks, migration/rollout needs, and residual risks. Do not deploy, publish, or perform destructive actions without explicit approval.

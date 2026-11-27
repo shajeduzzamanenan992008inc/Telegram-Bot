@@ -1,0 +1,38 @@
+[Unit]
+Description=Enan Ultra Telegram AI Assistant
+After=network-online.target clamav-daemon.service
+Wants=network-online.target clamav-daemon.service
+
+[Service]
+Type=simple
+User=enan-ultra
+Group=enan-ultra
+SupplementaryGroups=clamav
+WorkingDirectory=/opt/enan-ultra/current
+EnvironmentFile=/etc/telegram-ai/bot.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPATH=/opt/enan-ultra/current/src
+ExecStart=/opt/enan-ultra/.venv/bin/python -m enan_ultra
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGINT
+UMask=0077
+StateDirectory=telegram-ai
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/telegram-ai
+
+[Install]
+WantedBy=multi-user.target

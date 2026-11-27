@@ -1,0 +1,70 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.15"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --locked --python 3.15 --group build --group test
+      - name: Audit locked dependencies
+        run: |
+          uv export --locked --no-default-groups --group build --group test --no-emit-project --format requirements.txt --output-file "$RUNNER_TEMP/requirements-audit.txt"
+          uvx --from pip-audit==2.10.1 pip-audit --no-deps --requirement "$RUNNER_TEMP/requirements-audit.txt"
+      - run: python -m pip install ruff==0.17.1
+      - run: ruff check --select E4,E7,E9,F src tests
+      - run: python -m compileall -q src tests
+      - run: node --check src/enan_ultra/webapp/static/app.js
+      - run: node --test tests/test_webapp_theme_ui.cjs
+      - run: uv build --wheel --no-sources
+      - name: Verify packaged Mini App assets
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          wheels = list(Path("dist").glob("*.whl"))
+          assert len(wheels) == 1, f"Expected one wheel, found {len(wheels)}"
+          required = {
+              "enan_ultra/webapp/static/index.html",
+              "enan_ultra/webapp/static/app.js",
+              "enan_ultra/webapp/static/app.css",
+          }
+          required.update(
+              f"enan_ultra/webapp/themes/{path.name}"
+              for path in Path("src/enan_ultra/webapp/themes").glob("*.json")
+          )
+          with ZipFile(wheels[0]) as wheel:
+              packaged = set(wheel.namelist())
+          missing = sorted(required - packaged)
+          assert not missing, f"Wheel is missing web assets: {missing}"
+          PY
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --locked --python ${{ matrix.python-version }} --group build --group test
+      - name: Install Bengali PDF fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends fonts-noto-core
+      - run: uv run --locked --python ${{ matrix.python-version }} pytest -q

@@ -1,0 +1,48 @@
+[project]
+name = "enan-ultra-telegram-ai"
+version = "0.1.0"
+description = "A modular, secure, multimodal Telegram assistant with multi-provider AI and private Mission Control."
+readme = "README.md"
+requires-python = ">=3.11,<3.16"
+license = "LicenseRef-Enan-Ultra-PANC-1.1"
+license-files = ["LICENSE"]
+dependencies = [
+  "python-telegram-bot==22.8",
+  "httpx==0.28.1",
+  "python-dotenv==1.2.4",
+  "pypdf==6.21.4",
+  "aiosqlite==0.22.1",
+  "Pillow==13.0.0",
+  "gTTS>=2.5,<3",
+  "beautifulsoup4>=4.12,<5",
+  "opencv-python-headless==5.0.0.93",
+  "python-docx==1.2.0",
+  "openpyxl==3.1.5",
+  "python-pptx==1.0.2",
+  "fastapi==0.143.0",
+  "uvicorn==0.54.0",
+  "cryptography==50.0.2",
+  "tzdata>=2025.2",
+  "reportlab[shaping]==5.0.1",
+]
+
+[project.scripts]
+enan-ultra = "enan_ultra.__main__:main"
+
+[dependency-groups]
+build = ["hatchling==1.32.4"]
+test = ["pytest==9.1.1"]
+
+[build-system]
+requires = ["hatchling==1.32.4"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+pythonpath = [".", "src"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/enan_ultra"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

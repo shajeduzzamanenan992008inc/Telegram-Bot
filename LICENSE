@@ -1,0 +1,279 @@
+ENAN ULTRA TELEGRAM AI ASSISTANT
+PUBLIC ATTRIBUTION NON-COMMERCIAL LICENSE
+Version 1.1 (PANC-1.1)
+
+SPDX-License-Identifier: LicenseRef-Enan-Ultra-PANC-1.1
+
+Copyright (c) 2026 Shajeduzzaman Enan
+Official Repository:
+https://github.com/shajeduzzamanenan992008inc/Telegram-Bot
+
+STATUS AND EFFECTIVE DATE
+
+This is the final adoption-ready license text prepared for the Official
+Repository. It becomes effective only on the date the complete text is first
+published as the root-level LICENSE file on the Official Repository's default
+branch while that repository is publicly accessible. That date is the
+"Effective Date". No permission is granted by this text before the Effective
+Date. This license is not backdated. If the repository remains private, this
+public license grant does not become effective.
+
+1. DEFINITIONS AND LICENSED MATERIALS
+
+1.1 "Project" means the software project identified as Enan Ultra Telegram AI
+Assistant, also referred to in its source metadata as enan-ultra-telegram-ai,
+maintained at the Official Repository.
+
+1.2 "Licensed Materials" means only the original code, documentation, tests,
+project-specific scripts, configuration templates, workflows, and other
+first-party materials in the Official Repository that the Licensor owns or is
+authorized to license, as they exist on or after the Effective Date.
+
+1.3 "Licensor" means Shajeduzzaman Enan, solely to the extent the Licensor owns
+or controls the relevant rights. This license does not create ownership of
+materials authored by other people or entities.
+
+1.4 "You" means the individual or legal entity exercising rights under this
+license. "Non-Commercial" means use that is not primarily intended for or
+directed toward commercial advantage, monetary compensation, business
+operations, or revenue generation, whether directly or indirectly.
+
+1.5 "Third-Party Materials" means software, libraries, models, fonts, icons,
+images, datasets, APIs, services, documentation, and other materials owned by
+someone other than the Licensor, including dependencies declared in project
+metadata or lock files. Third-Party Materials are not relicensed by this
+license and remain subject to their own terms.
+
+1.6 "User Data" means Telegram messages, chats, media, files, identifiers,
+account information, personal knowledge-base content, prompts, generated
+content, reminders, database records, logs, backups, and any other data
+submitted to, processed by, or created for a bot user or operator. User Data is
+not part of the Licensed Materials merely because the Project can process or
+store it.
+
+2. GRANT OF NON-COMMERCIAL PERMISSIONS
+
+Subject to this license and applicable law, the Licensor grants You a
+worldwide, non-exclusive, royalty-free, non-sublicensable, revocable-upon-
+termination license, effective from the Effective Date, to do the following
+solely for Non-Commercial purposes:
+
+(a) view, access, inspect, evaluate, study, and review the Licensed Materials;
+(b) download, clone, copy, and make temporary or permanent copies;
+(c) build, test, run, self-host, and deploy the Project, including in a
+    non-commercial production environment;
+(d) modify, adapt, and create derivative works of the Licensed Materials;
+(e) integrate the Licensed Materials into a non-commercial personal project;
+(f) share or redistribute the original or modified Licensed Materials in
+    source or build form, provided that You comply with the attribution,
+    license-retention, and other conditions in this license.
+
+No permission is granted for Commercial use. A separate prior written
+commercial license from the Licensor is required before any Commercial use.
+
+3. ATTRIBUTION, PROJECT IDENTITY, AND REDISTRIBUTION
+
+3.1 You must retain this complete LICENSE text, copyright notices, authorship
+references, and existing attribution notices in every copy or substantial
+portion of the Licensed Materials that You distribute.
+
+3.2 You must preserve clear and reasonably prominent attribution to the
+original project and its creator. The required attribution is:
+
+    "Enan Ultra Telegram AI Assistant — original project by
+    Shajeduzzaman Enan. Used under the Enan Ultra Telegram AI Assistant
+    Public Attribution Non-Commercial License v1.1."
+
+3.3 You may identify your own modifications or fork, but You may not remove,
+replace, hide, or materially obscure the original Project name, original
+branding, or creator attribution. If You use a different fork or product name,
+the original Project identity and attribution must remain visible in the
+README, credits/about information, and distributed source materials. You may
+not present a fork as an independently created or official project, or imply
+endorsement by the Licensor.
+
+3.4 Modified redistributions must identify that they have been modified and
+must include a reasonably accessible copy of this license. You may not impose
+additional restrictions that remove the permissions granted by this license
+for the unmodified Licensed Materials.
+
+4. COMMERCIAL USE IS NOT PERMITTED
+
+Without a separate prior written agreement signed or otherwise expressly
+approved by the Licensor, You may not use, offer, deploy, distribute, host,
+operate, or provide the Licensed Materials or a derivative as part of a
+Commercial activity. Commercial use includes, without limitation:
+
+(a) using the Project to operate or support a business, commercial team,
+    revenue-generating activity, or paid internal business workflow;
+(b) offering a paid, subscription, metered, sponsored, or ad-supported bot,
+    assistant, hosted instance, API, SaaS, managed service, or competing
+    service based on the Licensed Materials;
+(c) selling, licensing, sublicensing, renting, or otherwise monetizing the
+    Project, a derivative, or access to its functionality;
+(d) providing paid consulting, implementation, integration, customization,
+    deployment, hosting, support, maintenance, or training services based on
+    the Licensed Materials;
+(e) using the Project to obtain a commercial advantage or monetary
+    compensation for You or another party, even when end users are not charged.
+
+A non-commercial personal deployment or a non-commercial community evaluation
+is permitted, subject to the other terms of this license. Calling a service
+"free" does not make it Non-Commercial if it is primarily used to support a
+business, advertising, lead generation, or another commercial purpose.
+
+5. AI AND MACHINE-LEARNING TRAINING RESTRICTION
+
+5.1 Without the Licensor's prior written permission, You may not use the
+Licensed Materials, in whole or in substantial part, as training, fine-tuning,
+distillation, evaluation, or optimization data for an AI or machine-learning
+model or system where the purpose or effect is to train, improve, reproduce,
+extract, or transfer knowledge of the Licensed Materials into model weights
+or a reusable training corpus.
+
+5.2 This restriction includes collecting or repackaging the Licensed Materials
+into datasets, embeddings, code corpora, synthetic training sets, or other
+materials intended for model training, fine-tuning, distillation, or model
+improvement. It also applies to third parties acting on Your behalf.
+
+5.3 Ordinary AI-assisted software development, code explanation, debugging,
+review, and task assistance are permitted for Non-Commercial purposes only
+when the AI provider and selected settings do not use submitted Licensed
+Materials to train or improve models. This limited exception does not permit
+bulk ingestion or the creation of a training corpus.
+
+6. USER DATA, PRIVACY, AND EXTERNAL SYSTEMS
+
+6.1 This license applies to software rights in the Licensed Materials only.
+It does not grant You ownership of, or permission to reuse, disclose, train on,
+redistribute, or otherwise exploit User Data. User Data remains subject to the
+rights of the relevant users, operators, and other rights holders, as well as
+applicable privacy, data-protection, contract, and platform rules.
+
+6.2 The Project may connect to Telegram, AI providers, search services,
+Home Assistant, cloud platforms, local models, and other external systems.
+This license does not grant access to those systems, their APIs, accounts,
+models, credentials, infrastructure, or proprietary materials. You are
+responsible for obtaining required permissions and complying with their terms.
+
+6.3 You may test or assess only bots, accounts, repositories, devices, and
+systems that You own or are expressly authorized to access. This license does
+not grant authorization to access another person's account, intercept private
+communications, bypass platform controls, or perform security testing against
+systems without permission.
+
+6.4 You must protect Telegram bot tokens, provider API keys, encryption keys,
+user identifiers, database credentials, dashboard secrets, and other
+credentials. Do not publish real secrets or private User Data when sharing a
+copy of the Licensed Materials.
+
+7. THIRD-PARTY MATERIALS AND GENERATED OUTPUTS
+
+7.1 Third-Party Materials are excluded from this license. Their respective
+copyright owners and license terms control. Nothing here changes the terms of
+open-source packages, fonts, media, model weights, APIs, or other third-party
+components used with the Project.
+
+7.2 The Project's outputs do not automatically become Licensed Materials.
+Rights in generated text, images, audio, documents, and other outputs depend
+on the applicable provider terms, input rights, and governing law. This
+license makes no claim over user-created or third-party output content.
+
+7.3 If a third-party notice or separate license accompanies a component, You
+must retain and comply with that notice or license for that component.
+
+8. CONTRIBUTIONS AND OWNERSHIP
+
+8.1 Each contributor retains ownership of the copyright and other rights in
+that contributor's original contributions, unless a separate written
+agreement states otherwise.
+
+8.2 A contribution is covered by this license only where the contributor owns
+or controls the relevant rights and has expressly agreed in writing, through
+a contribution agreement, or through an equally clear documented grant to
+make that contribution available under this license. Merely submitting a
+patch, pull request, issue, or suggestion does not automatically transfer
+ownership or grant commercial relicensing rights.
+
+8.3 The Licensor grants rights only in materials the Licensor owns or is
+authorized to license. If You identify material for which the required rights
+are unclear, do not assume that this license clears that material for reuse.
+
+9. RESTRICTIONS AND COMPLIANCE
+
+You may not:
+
+(a) remove or falsify copyright, attribution, or license notices;
+(b) misrepresent authorship, origin, endorsement, or official status;
+(c) use the Licensed Materials for unlawful activity or to violate the rights
+    of another person;
+(d) bypass technical or access controls on external services by relying on
+    this license as supposed authorization;
+(e) claim that the Project guarantees security, privacy, availability,
+    correctness, regulatory compliance, or any particular result;
+(f) use the Licensed Materials in a manner prohibited by the Commercial-use
+    or AI-training restrictions above.
+
+10. NO WARRANTY
+
+THE LICENSED MATERIALS ARE PROVIDED "AS IS" AND "AS AVAILABLE", WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, EXPRESS OR IMPLIED, TO THE MAXIMUM
+EXTENT PERMITTED BY APPLICABLE LAW. THE LICENSOR DISCLAIMS WARRANTIES OF
+TITLE, NON-INFRINGEMENT, MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE,
+ACCURACY, SECURITY, AVAILABILITY, AND ERROR-FREE OPERATION. THE PROJECT MAY
+CONTAIN DEFECTS OR SECURITY VULNERABILITIES AND MAY DEPEND ON EXTERNAL
+PROVIDERS OR SERVICES THAT CAN CHANGE OR BECOME UNAVAILABLE.
+
+11. LIMITATION OF LIABILITY
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE LICENSOR SHALL NOT BE
+LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, PUNITIVE, OR
+CONSEQUENTIAL DAMAGES, OR FOR LOSS OF DATA, PROFITS, REVENUE, BUSINESS,
+GOODWILL, SERVICE, OR SYSTEM AVAILABILITY, ARISING OUT OF OR RELATED TO THE
+LICENSED MATERIALS OR THIS LICENSE, UNDER ANY THEORY OF LIABILITY, EVEN IF
+ADVISED OF THE POSSIBILITY OF SUCH DAMAGES. NOTHING IN THIS LICENSE EXCLUDES
+LIABILITY THAT CANNOT LAWFULLY BE EXCLUDED OR LIMITED.
+
+12. TERMINATION
+
+Your rights under this license terminate automatically if You materially
+breach its terms. Where the breach is capable of remedy, the Licensor may
+provide written notice and a reasonable opportunity to cure; this does not
+require the Licensor to permit continued Commercial use or unauthorized AI
+training. Upon termination, You must stop the activity that caused the breach
+and cease exercising the terminated permissions. Sections concerning
+ownership, User Data, Third-Party Materials, disclaimer, liability, and any
+terms that by their nature should survive will continue to apply.
+
+13. NO TRADEMARK OR PATENT LICENSE
+
+No trademark, service-mark, trade-name, patent, or other right is granted by
+this license except for the limited descriptive use necessary to provide the
+attribution required by Section 3. All rights not expressly granted are
+reserved by their respective owners.
+
+14. SEVERABILITY AND ENTIRE LICENSE
+
+If any provision is held unenforceable, it will be limited or severed only to
+the minimum extent necessary, and the remaining provisions will continue to
+apply. This document is the complete public license grant for the Licensed
+Materials, subject to any separate written agreement signed by the relevant
+rights holders. No failure to enforce a provision is a waiver of that
+provision.
+
+15. NOT AN OSI-APPROVED OPEN-SOURCE LICENSE
+
+This is a custom source-available, attribution-required, non-commercial
+license. It is not an OSI-approved Open Source license and does not grant
+commercial-use rights. Do not describe the Project as OSI-licensed or
+unrestricted open source while this license applies.
+
+16. CONTACT AND PERMISSION
+
+For written permission outside the scope of this license, including
+Commercial use, AI/ML training, or a separate licensing arrangement, contact
+the Licensor through the contact method published in the Official Repository.
+A permission is valid only when expressly granted in writing by a person
+authorized to grant the relevant rights.
+
+END OF LICENSE

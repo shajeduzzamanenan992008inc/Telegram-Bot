@@ -1,0 +1,19 @@
+# EXAMPLE ONLY. Copy to .github/workflows/node.yml after verifying Node version,
+# package manager, lockfile path and scripts. Pin actions to verified SHAs.
+name: Node.js CI (example)
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@<VERIFIED_40_CHARACTER_COMMIT_SHA>
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@<VERIFIED_40_CHARACTER_COMMIT_SHA>
+        with:
+          node-version: "<PROJECT_SUPPORTED_VERSION>"
+      - run: npm ci
+      - run: npm test --if-present
+      - run: npm run build --if-present

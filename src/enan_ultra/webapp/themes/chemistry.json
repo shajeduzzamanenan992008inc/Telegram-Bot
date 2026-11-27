@@ -1,0 +1,10 @@
+{
+  "id": "chemistry",
+  "label": {"bn": "অণু গবেষণাগার", "en": "Molecular Lab"},
+  "icon": "🧪",
+  "colors": {"background": "#101527", "surface": "#202844", "accent": "#84e0b4", "glow": "#20a8c6", "text": "#f3fff9"},
+  "animation": "molecules",
+  "motion": "low",
+  "contrast": "standard",
+  "detector": {"keywords_en": ["chemistry", "chemical reaction", "molecule", "molecular", "atom", "covalent bond", "periodic table", "chemical equation", "acid", "base", "element", "rasayon", "rosayon", "rasayan", "rasayon e", "chemistry te", "chemistry bujhao", "atom ki", "onu ki", "poromanu", "onu", "chemical bikriya", "porjay saroni"], "keywords_bn": ["রসায়ন", "রাসায়নিক বিক্রিয়া", "রাসায়নিক", "অণু", "পরমাণু", "সমযোজী বন্ধন", "পর্যায় সারণি", "অম্ল", "ক্ষার", "মৌল"]}
+}

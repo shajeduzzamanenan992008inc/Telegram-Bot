@@ -1,0 +1,10 @@
+start - Start the bot
+menu - Open the main menu
+help - How to use the bot
+profile - View your profile
+premium - Upgrade to Premium
+stats - Usage statistics
+settings - Preferences
+language - Change language
+support - Contact support
+about - About this bot

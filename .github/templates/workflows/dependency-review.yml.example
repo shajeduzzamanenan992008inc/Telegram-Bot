@@ -1,0 +1,18 @@
+# EXAMPLE ONLY. Check plan availability and pin the official action to a verified SHA.
+name: Dependency Review (example)
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+permissions:
+  contents: read
+jobs:
+  review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/dependency-review-action@<VERIFIED_40_CHARACTER_COMMIT_SHA>
+        with:
+          fail-on-severity: moderate
+          show-patched-versions: true

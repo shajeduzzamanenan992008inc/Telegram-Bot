@@ -1,0 +1,46 @@
+name: Feature request
+description: Propose a valuable product or engineering improvement.
+title: "[Feature]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / opportunity
+      description: Who experiences this problem and in what context?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe measurable user or business value, if known.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Include workflows, interfaces, constraints, or alternatives.
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Expected impact
+      options:
+        - User experience
+        - Security / privacy
+        - Reliability / performance
+        - Developer productivity
+        - Business / operations
+        - Other / not sure
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks, dependencies, or open questions

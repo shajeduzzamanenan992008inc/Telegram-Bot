@@ -1,0 +1,15 @@
+# Universal baseline: Dependabot updates the GitHub Actions used by this kit.
+# Add only ecosystems whose manifests/lockfiles are actually present in this repo.
+# See templates/dependabot/universal-ecosystems.yml.example for the supported catalog.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 8
+    labels:
+      - "dependencies"
+      - "automation"
+    commit-message:
+      prefix: "deps(actions)"
