@@ -12,8 +12,13 @@ for entry in (ROOT, ROOT / "src"):
     if str(entry) not in sys.path:
         sys.path.insert(0, str(entry))
 
+# Placeholder credential for tests. It deliberately does not use a Telegram-shaped
+# token so that provider secret scanning does not flag this public repository; it
+# still satisfies the format check in ``config.Settings.load``.
+_TEST_BOT_TOKEN = "123456789:placeholder-token-for-tests"
+
 BASE_ENV = {
-    "TELEGRAM_BOT_TOKEN": "123456789:AAExampleExampleExampleExample_123",
+    "TELEGRAM_BOT_TOKEN": _TEST_BOT_TOKEN,
     "ADMIN_CHAT_ID": "1",
     "ADMIN_USER_IDS": "1",
     "OPENROUTER_API_KEY": "sk-or-test-key",
