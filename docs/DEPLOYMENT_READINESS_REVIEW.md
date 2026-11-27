@@ -84,5 +84,5 @@ green on `main` and branch protection is enforced by the `protect-main` ruleset.
 | Branch protection / required checks | Enforced by the `protect-main` ruleset — 15 required checks, 0 approving reviews |
 | Dependabot alerts | 0 open |
 | Migration rollback test | Not performed |
-| Live Telegram Bot API smoke test | Not performed |
-| Linux systemd install/restart | Not performed |
+| Live Telegram Bot API smoke test | Not performed here; one-command verifier ready — `scripts/smoke_deployment.py`, see [live deployment verification](LIVE_DEPLOY_VERIFICATION.md) |
+| Linux systemd install/restart | Not performed here; run `deploy/install_ubuntu.sh`, then the verifier, on the host |

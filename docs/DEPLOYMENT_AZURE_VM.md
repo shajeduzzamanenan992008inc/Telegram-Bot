@@ -36,6 +36,17 @@ sudo systemctl status telegram-ai
 sudo journalctl -u telegram-ai -f
 ```
 
+One command checks the running deployment — service state, health marker,
+database, Telegram `getMe`, ClamAV socket and Mini App `/healthz` — without
+sending a message or restarting anything:
+
+```sh
+sudo python3 /opt/enan-ultra/current/scripts/smoke_deployment.py
+```
+
+Expected output, the manual Telegram checks and a failure-to-fix map live in
+[live deployment verification](LIVE_DEPLOY_VERIFICATION.md).
+
 Run `/status` and `/providers` from an authorized admin account. Check that `/start` shows its inline menu, `/cancel` is listed, a private chat gets a live preview when the Bot API supports Rich Messages, and `/export pdf` produces a Bengali-readable PDF. Send a normal supported attachment to verify a clean scan completes. Do not use a production token for automated tests.
 
 ## Optional Telegram Mini App
