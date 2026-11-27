@@ -1,0 +1,37 @@
+[
+  {
+    "file": "README.md",
+    "diagram": 1,
+    "edges": 15,
+    "animated": 15,
+    "missing": []
+  },
+  {
+    "file": "README.md",
+    "diagram": 2,
+    "edges": 8,
+    "animated": 8,
+    "missing": []
+  },
+  {
+    "file": "README.md",
+    "diagram": 3,
+    "edges": 18,
+    "animated": 18,
+    "missing": []
+  },
+  {
+    "file": "README.md",
+    "diagram": 5,
+    "edges": 6,
+    "animated": 6,
+    "missing": []
+  },
+  {
+    "file": "docs/AI_PROVIDER_ARCHITECTURE.md",
+    "diagram": 1,
+    "edges": 10,
+    "animated": 10,
+    "missing": []
+  }
+]

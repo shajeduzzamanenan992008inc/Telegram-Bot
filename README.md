@@ -271,6 +271,11 @@ flowchart TD
     N e13@-->|"yes"| P
     N e14@-->|"no"| ERR(["Generic retry-later message"])
     OL e15@--> OK
+    class e03 flowGreen
+    class e10 flowAmber
+    class e11 flowAmber
+    class e14 flowRed
+
 
     classDef entry fill:#102A43,stroke:#38BDF8,stroke-width:2.5px,color:#F0F9FF
     classDef process fill:#12345A,stroke:#60A5FA,stroke-width:2px,color:#EFF6FF
@@ -293,16 +298,16 @@ flowchart TD
     class e01,e02,e04,e05,e06,e12,e13 flowBlue
     class e07,e15 flowGreen
     class e08,e09 flowAmber
-    class e10,e11 flowStaticAmber
-    class e03 flowStaticGreen
-    class e14 flowStaticRed
+    class e10,e11 flowAmber
+    class e03 flowGreen
+    class e14 flowRed
 
     classDef flowBlue stroke:#60A5FA,stroke-width:2.5px,stroke-dasharray:9\,5
     classDef flowGreen stroke:#4ADE80,stroke-width:2.5px,stroke-dasharray:9\,5
     classDef flowAmber stroke:#FBBF24,stroke-width:2.5px,stroke-dasharray:8\,5
-    classDef flowStaticAmber stroke:#F59E0B,stroke-width:2px,stroke-dasharray:4\,4
-    classDef flowStaticGreen stroke:#34D399,stroke-width:2px
-    classDef flowStaticRed stroke:#FB7185,stroke-width:2px
+    classDef flowAmber stroke:#F59E0B,stroke-width:2px,stroke-dasharray:4\,4
+    classDef flowGreen stroke:#34D399,stroke-width:2px
+    classDef flowRed stroke:#FB7185,stroke-width:2px
 
     e01@{ animation: fast }
     e02@{ animation: fast }
@@ -316,6 +321,10 @@ flowchart TD
     e13@{ animation: fast }
     e15@{ animation: slow }
 
+    e03@{ animation: slow }
+    e10@{ animation: slow }
+    e11@{ animation: slow }
+    e14@{ animation: slow }
 ```
 
 ### Multimodal understanding and documents
@@ -376,6 +385,8 @@ flowchart TD
     A1 e06@--> ST["/evolve_stage ID PATCH_SHA256<br/>re-test on the same source ZIP"]
     ST e07@--> A2["/evolve_deploy_approve ID PATCH_SHA256<br/>separate approval record"]
     A2 e08@--> OP(["Operator release process<br/>run separately, outside the bot"])
+    class e03 flowRed
+
 
     classDef entry fill:#102A43,stroke:#38BDF8,stroke-width:2.5px,color:#F0F9FF
     classDef process fill:#12345A,stroke:#60A5FA,stroke-width:2px,color:#EFF6FF
@@ -393,11 +404,11 @@ flowchart TD
 
     class e01,e02,e04,e05,e06,e07 flowBlue
     class e08 flowPurple
-    class e03 flowStaticRed
+    class e03 flowRed
 
     classDef flowBlue stroke:#60A5FA,stroke-width:2.5px,stroke-dasharray:9\,5
     classDef flowPurple stroke:#A78BFA,stroke-width:2px,stroke-dasharray:7\,5
-    classDef flowStaticRed stroke:#FB7185,stroke-width:2px
+    classDef flowRed stroke:#FB7185,stroke-width:2px
 
     e01@{ animation: fast }
     e02@{ animation: fast }
@@ -406,6 +417,8 @@ flowchart TD
     e06@{ animation: fast }
     e07@{ animation: fast }
 
+    e03@{ animation: slow }
+    e08@{ animation: fast }
 ```
 
 > [!NOTE]
@@ -481,6 +494,9 @@ flowchart LR
     DASH e16@--> DB
     MINI e17@--> DB
     ADMIN e18@-.->|"SSH tunnel"| DASH
+    class e04 opsFlow
+    class e18 opsFlow
+
 
     classDef user fill:#2A1747,stroke:#E879F9,stroke-width:2.5px,color:#FDF4FF
     classDef gateway fill:#102A43,stroke:#38BDF8,stroke-width:2.5px,color:#F0F9FF
@@ -512,7 +528,7 @@ flowchart LR
     class e11,e16,e17 storageFlow
     class e12 externalFlow
     class e13 localFlow
-    class e04,e18 staticOps
+    class e04,e18 opsFlow
 
     classDef ingressFlow stroke:#38BDF8,stroke-width:2.5px,stroke-dasharray:9\,5
     classDef coreFlow stroke:#60A5FA,stroke-width:2.5px,stroke-dasharray:9\,5
@@ -521,7 +537,7 @@ flowchart LR
     classDef storageFlow stroke:#4ADE80,stroke-width:2.5px,stroke-dasharray:9\,5
     classDef externalFlow stroke:#C4B5FD,stroke-width:2.5px,stroke-dasharray:8\,5
     classDef localFlow stroke:#34D399,stroke-width:2.5px,stroke-dasharray:9\,5
-    classDef staticOps stroke:#A78BFA,stroke-width:2px,stroke-dasharray:4\,4
+    classDef opsFlow stroke:#A78BFA,stroke-width:2px,stroke-dasharray:4\,4
 
     e01@{ animation: fast }
     e02@{ animation: fast }
@@ -540,6 +556,8 @@ flowchart LR
     e16@{ animation: slow }
     e17@{ animation: slow }
 
+    e04@{ animation: fast }
+    e18@{ animation: slow }
 ```
 
 | Module | Responsibility |
@@ -965,6 +983,8 @@ flowchart TD
     KEEP e04@--> RS["Restore script"]
     RS e05@--> CHK["Checks the service is stopped"]
     CHK e06@--> SW["Old database kept as<br/>.pre-restore-UTC-timestamp<br/>backup replaces it atomically"]
+    class e03 externalFlow
+
 
     classDef storage fill:#123D2B,stroke:#4ADE80,stroke-width:2.5px,color:#F0FDF4
     classDef encrypted fill:#123B4A,stroke:#22D3EE,stroke-width:2.5px,color:#ECFEFF
@@ -986,12 +1006,12 @@ flowchart TD
     class e04 flowBlue
     class e05 flowAmber
     class e06 flowGreen
-    class e03 staticExternal
+    class e03 externalFlow
 
     classDef flowGreen stroke:#4ADE80,stroke-width:2.5px,stroke-dasharray:9\,5
     classDef flowBlue stroke:#60A5FA,stroke-width:2.5px,stroke-dasharray:9\,5
     classDef flowAmber stroke:#FBBF24,stroke-width:2.5px,stroke-dasharray:8\,5
-    classDef staticExternal stroke:#A78BFA,stroke-width:2px,stroke-dasharray:4\,4
+    classDef externalFlow stroke:#A78BFA,stroke-width:2px,stroke-dasharray:4\,4
 
     e01@{ animation: slow }
     e02@{ animation: slow }
@@ -999,6 +1019,7 @@ flowchart TD
     e05@{ animation: fast }
     e06@{ animation: slow }
 
+    e03@{ animation: slow }
 ```
 
 Create an encrypted backup and restore it (reading the key from the installer's `/etc/telegram-ai/bot.env` needs root):
