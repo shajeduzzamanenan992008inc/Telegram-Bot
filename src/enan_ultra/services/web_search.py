@@ -11,6 +11,13 @@ MAX_RESPONSE_BYTES = 1_000_000
 SEARCH_URL = "https://html.duckduckgo.com/html/"
 
 
+def _is_duckduckgo_host(hostname: str | None) -> bool:
+    if not hostname:
+        return False
+    host = hostname.casefold().rstrip(".")
+    return host == "duckduckgo.com" or host.endswith(".duckduckgo.com")
+
+
 def parse_search_results(html: str, limit: int = 3) -> list[dict[str, str]]:
     soup = BeautifulSoup(html, "html.parser")
     results: list[dict[str, str]] = []
@@ -24,7 +31,7 @@ def parse_search_results(html: str, limit: int = 3) -> list[dict[str, str]]:
         if url.startswith("//"):
             url = "https:" + url
         parsed = urlsplit(url)
-        if parsed.hostname and parsed.hostname.casefold().endswith("duckduckgo.com"):
+        if _is_duckduckgo_host(parsed.hostname):
             redirect_target = parse_qs(parsed.query).get("uddg", [])
             if redirect_target:
                 url = unquote(redirect_target[0])
@@ -32,7 +39,7 @@ def parse_search_results(html: str, limit: int = 3) -> list[dict[str, str]]:
         parsed = urlsplit(url)
         if not title or not text or parsed.scheme != "https" or not parsed.hostname:
             continue
-        if parsed.hostname.casefold().endswith("duckduckgo.com"):
+        if _is_duckduckgo_host(parsed.hostname):
             continue
         results.append({"title": title, "url": url, "snippet": text})
         if len(results) >= max(1, min(limit, 3)):
