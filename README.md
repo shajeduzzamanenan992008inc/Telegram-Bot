@@ -1089,7 +1089,7 @@ uv run --locked --group test pytest
 | **Stickers** | [`STICKER_COLLECTION`](docs/STICKER_COLLECTION.md) · [`STICKER_DATABASE`](docs/STICKER_DATABASE.md) · [`STICKER_IMPORT`](docs/STICKER_IMPORT.md) · [`STICKER_CATEGORIZATION`](docs/STICKER_CATEGORIZATION.md) · [`STICKER_TROUBLESHOOTING`](docs/STICKER_TROUBLESHOOTING.md) |
 | **Agents and approvals** | [`MISSION_CONTROL_ARCHITECTURE`](docs/MISSION_CONTROL_ARCHITECTURE.md) · [`SELF_EVOLUTION_WORKFLOW`](docs/SELF_EVOLUTION_WORKFLOW.md) · [`TELEGRAM_APPROVALS`](docs/TELEGRAM_APPROVALS.md) |
 | **Updates** | [`TELEGRAM_ZIP_UPDATES`](docs/TELEGRAM_ZIP_UPDATES.md) · [`UPDATE_SECURITY`](docs/UPDATE_SECURITY.md) · [`UPDATE_TROUBLESHOOTING`](docs/UPDATE_TROUBLESHOOTING.md) |
-| **Brand and licensing** | [Asset pack README](assets/README.md) · [Brand guide](assets/08-text-kit/brand-guide.md) · [Licensing drafts](docs/licensing-draft/) |
+| **Brand and licensing** | [Asset pack README](assets/README.md) · [Brand guide](assets/08-text-kit/brand-guide.md) · [License](LICENSE) |
 
 
 <p align="center"><img src="assets/05-elements/divider-lightning.svg" alt="" width="100%"></p>
@@ -1656,15 +1656,15 @@ Enan Ultra is an independent project. It is not affiliated with, endorsed by or 
 
 <h2 align="center">License</h2>
 
-<p align="center"><i>Source-available. The final terms are being finalized.</i></p>
+<p align="center"><i>Source-available, non-commercial and attribution-required.</i></p>
 
 
 > [!IMPORTANT]
-> **Status: pending.** No final `LICENSE` file has been published at the repository root yet. The proposed terms below are drafted in [`docs/licensing-draft/`](docs/licensing-draft/) and are **not in force** until they are published as the project's license. Until then, please contact the copyright holder before reusing the code.
+> **Status: published.** The complete terms are in [`LICENSE`](LICENSE) at the repository root (PANC-1.1, `LicenseRef-Enan-Ultra-PANC-1.1`) and apply while this repository is publicly accessible on the default branch. Read the summary below, then the full text, before reusing the code.
 
-**Proposed model: Attribution-Required Non-Commercial Public Software License** (source-available, not an OSI-approved open-source license).
+**License model: Attribution-Required Non-Commercial Public Software License** (source-available, not an OSI-approved open-source license).
 
-| | Proposed terms |
+| | Terms |
 |---|---|
 | ✅ **Non-commercial use** | Free to use, modify, fork, self-host and redistribute, **with attribution**. |
 | 🔒 **Commercial use** | Only with separate written permission from the licensor, Shajeduzzaman Enan. |

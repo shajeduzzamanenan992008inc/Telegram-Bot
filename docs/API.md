@@ -52,12 +52,11 @@ Common Mini App middleware/auth errors use JSON `{"detail":"..."}`:
 | `429` | More than 120 API requests per user/minute, chat cooldown/concurrency, or usage limit. |
 | `503` | No model configured for chat. |
 
-### Mini App tests
+### Mini App test coverage
 
-- `tests/test_mini_app.py::test_telegram_init_data_signature_timestamp_and_user_are_checked` covers signature, timestamp, and user validation.
-- `tests/test_mini_app.py::test_mini_app_settings_require_https_root_and_loopback` covers required HTTPS-root and loopback configuration.
-- `tests/test_mini_app.py::test_mini_app_auth_theme_preferences_streaming_and_user_isolation` exercises Origin/Host/auth rejection, bootstrap/theme state, per-user separation, task ownership/prerequisites, and a successful SSE chat flow.
-- These tests do not establish live Telegram, reverse-proxy, or AI-provider integration. The endpoint-specific failure branches not asserted by those cases are source-derived, not independently integration-tested.
+- `tests/test_runtime_and_servers.py::test_dashboard_and_mini_app_use_the_shared_server_builder` covers shared server construction for the dashboard and the Mini App.
+- `tests/test_webapp_theme_ui.cjs` covers the theme schema, contrast, accessibility and element-contract checks the frontend relies on.
+- Init-data signature/timestamp validation, Origin/Host rejection, per-user separation, task ownership and the SSE chat flow are implemented in `src/enan_ultra/mini_app.py` but are not exercised by an automated test in this checkout. Live Telegram, reverse-proxy and AI-provider integration are not established here either.
 
 ## Admin dashboard
 
@@ -79,17 +78,17 @@ state-changing dashboard route also requires same-origin `Origin` matching
 request scheme and host. Unauthenticated API calls return `401`; missing or
 cross-origin mutation Origin returns `403`.
 
-| Method and path | Request | Success response / behavior | Explicit errors and test evidence |
+| Method and path | Request | Success response / behavior | Explicit errors and evidence |
 | --- | --- | --- | --- |
-| `POST /auth/login` | JSON `token` | `{"ok":true}` plus 12-hour cookie. | `401` invalid access key; `403` missing/mismatched Origin; `429` login-attempt limit. Tested in `test_final_upgrade.py::test_dashboard_requires_login_and_same_origin`. |
-| `POST /auth/logout` | No body | `{"ok":true}` and cookie deletion. | `403` missing/mismatched Origin. Login/logout covered by the same dashboard test. |
+| `POST /auth/login` | JSON `token` | `{"ok":true}` plus 12-hour cookie. | `401` invalid access key; `403` missing/mismatched Origin; `429` login-attempt limit. Branches are implemented in `dashboard.py`. |
+| `POST /auth/logout` | No body | `{"ok":true}` and cookie deletion. | `403` missing/mismatched Origin. Implemented in `dashboard.py`. |
 | `GET /` | None | Dashboard HTML. | Loopback host restriction. Auth not required to return the page; API data remains protected. |
-| `GET /api/v1/status` | None | Object: `state`, `uptime_seconds`, `dashboard`, `active_live_sessions`, `resources`. | `401` without valid cookie. Tested for login requirement and `dashboard=loopback`. |
-| `GET /api/v1/health` | None | Health snapshot: `status` (`ok` or `degraded`) and resource metrics. | `401` without valid cookie. Tested for status and disk metrics. |
+| `GET /api/v1/status` | None | Object: `state`, `uptime_seconds`, `dashboard`, `active_live_sessions`, `resources`. | `401` without valid cookie; the payload reports `dashboard=loopback`. |
+| `GET /api/v1/health` | None | Health snapshot: `status` (`ok` or `degraded`) and resource metrics. | `401` without valid cookie; the payload carries resource and disk metrics. |
 | `GET /api/v1/providers` | None | Provider status returned by the router. Exact provider object fields are NOT VERIFIED in this route's tests. | `401` without valid cookie. Other provider failures are NOT VERIFIED. |
 | `GET /api/v1/usage` | None | Counts and cost: `requests_today`, `cost_today_usd`, `pending_approvals`, `running_agents`, `feedback_positive_today`, `feedback_negative_today`. | `401` without valid cookie. |
-| `GET /api/v1/users` | None | List of private-chat `user_id`, `last_active`, and `message_count`; no message content. | `401` without valid cookie. Tested after login. |
-| `POST /api/v1/users/{user_id}/clear-memory` | Positive integer path ID; same-origin Origin. No body required. | `{"ok":true}`; clears that ID's private history and long-term memory, not shared group history; records an audit event. | `400` non-positive ID; `401` unauthenticated; `403` missing/cross-origin Origin. Tested for success, invalid ID, and Origin enforcement. |
+| `GET /api/v1/users` | None | List of private-chat `user_id`, `last_active`, and `message_count`; no message content. | `401` without valid cookie. |
+| `POST /api/v1/users/{user_id}/clear-memory` | Positive integer path ID; same-origin Origin. No body required. | `{"ok":true}`; clears that ID's private history and long-term memory, not shared group history; records an audit event. | `400` non-positive ID; `401` unauthenticated; `403` missing/cross-origin Origin. Success, invalid ID and Origin enforcement are implemented in `dashboard.py`. |
 | `GET /api/v1/feedback` | None | List of aggregated recent negative-feedback category suggestions (`category`, `negative_count`, `suggestion`). | `401` without valid cookie. |
 | `GET /api/v1/jobs` | None | Up to 60 latest agent-job records with ID, user/task/provider/status, steps, cost, summary and timestamps. | `401` without valid cookie. |
 | `GET /api/v1/approvals` | None | Up to 100 pending, unexpired approvals with ID, requester, kind, summary, required approver, status and timestamps. | `401` without valid cookie. |
@@ -108,11 +107,12 @@ unhandled dependency errors are not exhaustively specified here.
 
 ### Dashboard test coverage
 
-`tests/test_final_upgrade.py::test_dashboard_requires_login_and_same_origin`
-covers missing login, successful login, authenticated status/users, Origin
-enforcement for memory clearing, positive-ID validation, health shape, denial
-of approval without Origin, and logout. It does not exercise every dashboard
-endpoint or prove real loopback networking/cookie deployment behavior.
+`tests/test_runtime_and_servers.py::test_dashboard_and_mini_app_use_the_shared_server_builder`
+covers only shared server construction. Login, session cookies, same-origin
+enforcement and the individual `/api/v1/*` routes are implemented in
+`src/enan_ultra/dashboard.py` but are not exercised by an automated test in this
+checkout, and nothing here proves real loopback networking, cookie handling or
+deployment behavior.
 
 ## Scope and deployment note
 

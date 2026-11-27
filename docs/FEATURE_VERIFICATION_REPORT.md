@@ -1,5 +1,7 @@
 # Enan Ultra — Feature Verification Audit
 
+> **Scope note.** This audit records the historical checkout `4050a487d6b32ff4b6fc4ed92bd3f0de06abfc49`. Several test modules it names are not present in the current tree; the checks that run today are listed in [`TESTING_AND_QUALITY_GATES.md`](./TESTING_AND_QUALITY_GATES.md).
+
 ## Current feature matrix and Telegram menu review (2026-10-23)
 
 This section records the current Windows working-tree review on branch `codex/admin-zip-update`, HEAD `4050a487d6b32ff4b6fc4ed92bd3f0de06abfc49`. The tree is intentionally dirty and includes existing repair work plus the command-menu changes. Results below distinguish source review and local mocked tests from real-service verification.

@@ -20,4 +20,4 @@ Automatic mode retains the current theme for uncertain input. A sufficiently str
 
 Add a JSON definition under `src/enan_ultra/webapp/themes/` with a safe filename matching `id`, a Bengali or English label, icon, five validated colors, animation name, and detector lists. Add Romanized spellings as `keywords_en`. The registry validates IDs, colors, keyword lengths/counts, and WCAG text/accent contrast at startup; invalid theme files are logged and ignored. Keep generic single-word terms conservative to avoid ambiguous matches.
 
-This is keyword/context matching with hysteresis, not a model-backed intent router; validate new vocabulary against realistic short and follow-up messages with `tests/test_adaptive_theme.py`.
+This is keyword/context matching with hysteresis, not a model-backed intent router; validate new vocabulary against realistic short and follow-up messages; the current suite has no dedicated topic-detection test.

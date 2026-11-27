@@ -75,8 +75,9 @@ The Mini App provides system/dark/light appearance, theme selection, favorites, 
 
 The static app and theme JSON files are runtime package data under `src/enan_ultra/webapp/`. Build the wheel and verify those assets are included before distributing a package. For local API checks use the repository's test suite:
 
-```powershell
-uv run --locked --group test pytest tests/test_adaptive_theme.py tests/test_mini_app.py tests/test_telegram_messages.py
+```bash
+node --test tests/test_webapp_theme_ui.cjs
+uv run --locked --group test pytest -q
 ```
 
 Live Telegram launch requires BotFather credentials, an HTTPS domain, a working reverse proxy, and any configured AI provider. These integration services are not required for local unit tests.
