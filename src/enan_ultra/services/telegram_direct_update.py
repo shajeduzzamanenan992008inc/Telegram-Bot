@@ -164,7 +164,7 @@ def extract_update_archive(
                     shutil.copyfileobj(source, destination, length=1024 * 1024)
                 staged_mode = info.external_attr >> 16
                 if staged_mode:
-                    safe_mode = 0o755 if staged_mode & 0o111 else 0o644
+                    safe_mode = 0o700 if staged_mode & 0o111 else 0o600
                     os.chmod(staged_path, safe_mode)
                 staged.append((staged_path, root.joinpath(*relative.parts), relative))
 
