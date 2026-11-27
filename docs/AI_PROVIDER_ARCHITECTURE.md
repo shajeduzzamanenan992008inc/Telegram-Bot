@@ -4,16 +4,41 @@ The bot routes chat requests through the configured provider adapters. The route
 
 ```mermaid
 flowchart LR
-    A[Telegram request] --> B{Privacy mode}
-    B -->|Local only| C[Ollama only]
-    B -->|Cloud allowed| D[Primary model]
-    D --> E[AI_PROVIDER_ORDER]
-    E --> F[Capability and free/cost policy]
-    F --> G[Attempt budget and circuit breaker]
-    G --> H[Provider adapter]
-    H -->|Success| I[AssistantResult]
-    H -->|Temporary failure| J[Eligible next model/provider]
-    J --> F
+    A([Telegram request]) e1@--> B{Privacy mode}
+    B e2@-->|Local only| C[(Ollama only)]
+    B e3@-->|Cloud allowed| D([Primary model])
+    D e4@--> E[AI_PROVIDER_ORDER]
+    E e5@--> F{Capability and free/cost policy}
+    F e6@--> G[Attempt budget and circuit breaker]
+    G e7@--> H[[Provider adapter]]
+    H e8@-->|Success| I([AssistantResult])
+    H e9@-->|Temporary failure| J[Eligible next model/provider]
+    J e10@--> F
+
+    classDef entry fill:#102A43,stroke:#38BDF8,color:#F0F9FF,stroke-width:2.5px
+    classDef decision fill:#3B2F63,stroke:#C4B5FD,color:#F5F3FF,stroke-width:2.5px
+    classDef local fill:#123B36,stroke:#34D399,color:#ECFDF5,stroke-width:2px
+    classDef cloud fill:#12345A,stroke:#60A5FA,color:#EFF6FF,stroke-width:2px
+    classDef policy fill:#3F3218,stroke:#FBBF24,color:#FFFBEB,stroke-width:2px
+    classDef provider fill:#123B4A,stroke:#22D3EE,color:#ECFEFF,stroke-width:2.5px
+    classDef success fill:#123D2B,stroke:#4ADE80,color:#F0FDF4,stroke-width:2.5px
+    classDef retry fill:#492817,stroke:#FB923C,color:#FFF7ED,stroke-width:2px
+
+    class A entry
+    class B,F decision
+    class C local
+    class D,E,G cloud
+    class H provider
+    class I success
+    class J retry
+
+    class e1,e3,e4,e5,e6,e7,e8 cloudFlow
+    class e2 localFlow
+    class e9,e10 retryFlow
+
+    classDef cloudFlow stroke:#60A5FA,stroke-width:2.5px,stroke-dasharray:9\,5,animation:fast
+    classDef localFlow stroke:#34D399,stroke-width:2.5px
+    classDef retryFlow stroke:#FB923C,stroke-width:2.5px,stroke-dasharray:7\,5,animation:fast
 ```
 
 ## Supported providers
