@@ -1,5 +1,7 @@
 # Bug Fix Report — Telegram-Bot Repository
 
+> **Scope note.** The fix list was written against an earlier checkout of this project, so the `294`/`295` figures under "Test Results" belong to that checkout's suite. The current tree ships 11 test modules / 88 pytest tests; the checks that run today are listed in [`TESTING_AND_QUALITY_GATES.md`](./TESTING_AND_QUALITY_GATES.md). The "Verification Pass — 2026-11-27" section at the end was produced against the current tree.
+
 ## Summary
 This document tracks all bugs identified and fixed during the engineering completion phase.
 

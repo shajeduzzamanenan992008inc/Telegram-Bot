@@ -2,30 +2,30 @@
 
 ## Pre-Release Verification
 
-### Code Quality (verified 2026-11-25)
+### Code Quality (verified 2026-11-27)
 
-- [x] Full pytest suite passes — 322 tests
-- [x] Ruff (`E4,E7,E9,F`) clean across `src`, `tests`, `scripts`
+- [x] Full pytest suite passes — 88 tests across 11 modules
+- [x] Ruff (`E4,E7,E9,F`) clean across `src`, `tests`
 - [x] Python compile check passes
 - [x] JavaScript syntax check passes
-- [x] JavaScript tests pass (3)
-- [x] Wheel builds (`enan_ultra_telegram_ai-0.1.0-py3-none-any.whl`, 62 files)
-- [x] Mini App assets verified in the wheel (static files + 10 themes)
+- [x] JavaScript tests pass (15 in `tests/test_webapp_theme_ui.cjs`)
+- [x] Wheel builds (`enan_ultra_telegram_ai-0.1.0-py3-none-any.whl`, 64 files)
+- [x] Mini App assets verified in the wheel (3 static files + 10 theme JSONs)
 - [x] Configuration validation (`scripts/validate_config.py`) passes
 
 ### Security
 
 - [x] Private/Public bypass fixed: database mode precedes ordinary-user checks
 - [x] Fail-closed behavior when the persisted mode cannot be read
-- [x] Global mode row seeded/upserted correctly (migration 17)
+- [x] Global mode persisted in `settings` (`global_access_mode`, default `private`); highest migration is 16
 - [x] `/setmode` command collision removed
-- [x] Mode-specific regression tests (27) pass
+- [x] Mode-specific regression tests pass (`tests/test_security_and_access.py`, `tests/test_database.py`)
 - [x] Dependency audit (`pip-audit`) — no known vulnerabilities
-- [x] Branch protection on `main`: strict required checks, 1 reviewer approval,
-      force-push and deletion protection (verified via API)
-- [x] Dependabot alerts and automated security fixes enabled
-- [ ] CodeQL results reviewed (GitHub Actions blocked by account billing)
-- [ ] Secret scanning (GitHub: not available for this repository/plan)
+- [x] Dependabot alerts: 0 open
+- [x] CodeQL Advanced runs on `main`; 0 open code-scanning alerts
+- [x] Secret scanning available; the single historical alert is resolved (`revoked`)
+- [ ] Branch protection on `main` — **not enabled**: no required checks, reviewer
+      approval, force-push or deletion protection (checked via API 2026-11-27)
 
 ### Documentation
 
@@ -39,7 +39,7 @@
 
 ### Configuration
 
-- [x] `.env.example` has 138 unique keys and matches literal loader keys
+- [x] `.env.example` has 146 unique keys and matches literal loader keys
 - [x] Required variables documented
 - [x] Invalid `ACCESS_MODE` / empty allowlist rejected by the loader
 
@@ -50,9 +50,8 @@
 - [x] `config-validation.yml` validates this repository's YAML/JSON/settings
 - [x] `security.yml` CodeQL configuration retained
 - [x] `dependency-review.yml` retained
-- [ ] Workflows executed successfully on GitHub — **blocked**: every job at
-      `446fcae` was refused before its first step with GitHub's failed
-      payment/spending-limit annotation
+- [x] All five workflows pass on `main` at `b8f73ba`: Tests, Telegram Bot CI,
+      GitHub Configuration Validation, Telegram Bot Code Security, CodeQL Advanced
 
 ## Release Process
 
