@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from urllib.parse import urlparse
 
 import pytest
 
@@ -49,7 +50,9 @@ def test_non_public_or_non_https_urls_are_rejected(url):
 
 
 def test_public_https_url_is_accepted():
-    assert require_public_https_url("https://example.com/a.png").startswith("https://example.com")
+    parsed = urlparse(require_public_https_url("https://example.com/a.png"))
+    assert parsed.scheme == "https"
+    assert parsed.hostname == "example.com"
 
 
 def test_private_mode_notice_is_plain_text():
