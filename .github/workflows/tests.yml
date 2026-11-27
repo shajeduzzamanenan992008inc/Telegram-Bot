@@ -68,6 +68,20 @@ jobs:
       - run: uv sync --locked --python ${{ matrix.python-version }} --group build --group test
       - name: Install Bengali PDF fonts and FFmpeg
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends ffmpeg fonts-noto-core
+          install_packages() {
+            sudo apt-get install --yes --no-install-recommends ffmpeg fonts-noto-core
+          }
+          # The hosted image ships third-party apt sources (packages.microsoft.com
+          # among them) that intermittently answer 403, which fails the whole
+          # `apt-get update`. Prefer the lists the image already has, then refresh
+          # only the Ubuntu repositories instead of every configured source.
+          if install_packages; then
+            exit 0
+          fi
+          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+            sudo apt-get update -o Dir::Etc::sourceparts="-" -o Dir::Etc::sourcelist="sources.list.d/ubuntu.sources"
+          else
+            sudo apt-get update
+          fi
+          install_packages
       - run: uv run --locked --python ${{ matrix.python-version }} pytest -q
