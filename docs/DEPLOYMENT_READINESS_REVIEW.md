@@ -57,26 +57,31 @@ items that require GitHub or a target host.
   verification are implemented.
 - Dependency audit passes locally with no known vulnerabilities after bumping
   `pypdf`, `soupsieve`, and `opentelemetry-api`.
-- All five workflows (Tests, Telegram Bot CI, GitHub Configuration Validation,
-  Telegram Bot Code Security, CodeQL Advanced) pass on `main` at `b8f73ba`;
+- All triggered workflows pass on `main` at `e0944e4` (19 successful check runs
+  across Tests, Telegram Bot CI, Telegram Bot Code Security and CodeQL Advanced;
+  GitHub Configuration Validation is path-filtered and skips docs-only changes);
   0 open code-scanning alerts.
-- Branch protection on `main` is **not enabled** (no required checks, review
-  requirement, force-push or deletion protection), checked via the GitHub API on
-  2026-11-27. Secret scanning is available; its single historical alert is
+- Branch protection on `main` is **enabled** through the `protect-main` ruleset
+  (active, targets the default branch): pull requests required, deletions and
+  force pushes blocked, 15 required status checks enforced (CI pytest matrix,
+  quality, dependency audit, wheel/Mini App assets, configuration validation, and
+  the Tests workflow `quality` + `test` matrix). No approving review is required,
+  so the sole owner can still merge a green pull request. Checked via the GitHub
+  API on 2026-11-27. Secret scanning is available; its single historical alert is
   resolved (`revoked`). Dependabot alerts: 0 open; no pull requests are open.
 
 ## Verdict
 
 **Locally verified for test/static/build readiness.** Linux deployment remains
 conditional on executing the deployment runbook on an authorized host. CI is
-green on `main`; branch protection is the one GitHub-side setting still absent.
+green on `main` and branch protection is enforced by the `protect-main` ruleset.
 
 ## Open items
 
 | Item | Status |
 | --- | --- |
-| Run CI workflows on GitHub | Pass on `main` at `b8f73ba` |
-| Branch protection / required reviews | Not enabled on the repository |
+| Run CI workflows on GitHub | Pass on `main` at `e0944e4` (19 checks) |
+| Branch protection / required checks | Enforced by the `protect-main` ruleset — 15 required checks, 0 approving reviews |
 | Dependabot alerts | 0 open |
 | Migration rollback test | Not performed |
 | Live Telegram Bot API smoke test | Not performed |

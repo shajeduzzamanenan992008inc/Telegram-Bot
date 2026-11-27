@@ -112,12 +112,17 @@ configured. Workflows have **not** been executed on GitHub from this workspace.
 
 ## GitHub settings (verified via API)
 
-- Branch protection on `main` is now active: strict required checks
-  (10 contexts), 1 approving review, force pushes and branch deletion disabled.
-  Admin enforcement is off so an owner can land an emergency fix.
-- Dependabot alerts and automated security fixes enabled.
-- Secret scanning: GitHub returned "Secret scanning is not available for this
-  repository" (plan/GHAS limitation), so it is not active.
+- **Correction (re-checked against the repository on 2026-11-27):** branch
+  protection on `main` is enforced by the `protect-main` ruleset — pull request
+  required, force pushes and branch deletion blocked, 15 required status checks,
+  and **0** approving reviews (the earlier "10 contexts + 1 approving review"
+  description did not match the repository). Repository admins keep a bypass so
+  an emergency fix can still land.
+- Dependabot alerts and automated security fixes enabled; 0 open alerts.
+- **Correction (re-checked 2026-11-27):** secret scanning is available on this
+  repository and its single historical alert is resolved (`revoked`); the
+  "not available for this repository" response no longer applies. CodeQL runs
+  report 0 open code-scanning alerts.
 - Dependabot PR #15 (CodeQL action 3.39.4 → 4.39.4) is **closed**; there are zero
   open pull requests, so nothing was merged.
 
@@ -140,3 +145,8 @@ wheel and assets verified), and branch protection is active. Priority 1 cannot
 be closed because GitHub Actions jobs are refused before execution by the
 account's failed payment/spending limit; CodeQL and CI cannot go green until the
 owner resolves billing. Secret scanning is unavailable on the current plan.
+
+**Correction (2026-11-27):** the billing/spending-limit blocker and the secret
+scanning limitation are both resolved. GitHub Actions now runs every workflow on
+`main`: `e0944e4` has 19 successful check runs plus a passing CodeQL analysis, and
+secret scanning is active with 0 open alerts.

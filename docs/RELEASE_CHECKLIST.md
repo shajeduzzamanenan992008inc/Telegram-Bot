@@ -24,8 +24,11 @@
 - [x] Dependabot alerts: 0 open
 - [x] CodeQL Advanced runs on `main`; 0 open code-scanning alerts
 - [x] Secret scanning available; the single historical alert is resolved (`revoked`)
-- [ ] Branch protection on `main` — **not enabled**: no required checks, reviewer
-      approval, force-push or deletion protection (checked via API 2026-11-27)
+- [x] Branch protection on `main` — enforced by the `protect-main` ruleset
+      (`enforcement: active`, target `~DEFAULT_BRANCH`): pull request required,
+      deletions and force pushes blocked, 15 required status checks, 0 approving
+      reviews required so the single owner is not locked out. Verified via the
+      GitHub API and the ruleset page on 2026-11-27
 
 ### Documentation
 
@@ -50,8 +53,10 @@
 - [x] `config-validation.yml` validates this repository's YAML/JSON/settings
 - [x] `security.yml` CodeQL configuration retained
 - [x] `dependency-review.yml` retained
-- [x] All five workflows pass on `main` at `b8f73ba`: Tests, Telegram Bot CI,
-      GitHub Configuration Validation, Telegram Bot Code Security, CodeQL Advanced
+- [x] All triggered workflows pass on `main` at `e0944e4` — 19 successful check
+      runs (Tests, Telegram Bot CI, Telegram Bot Code Security, CodeQL Advanced);
+      GitHub Configuration Validation is path-filtered and correctly skips
+      docs-only changes
 
 ## Release Process
 
