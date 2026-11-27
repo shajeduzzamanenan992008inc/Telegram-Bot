@@ -16,6 +16,11 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 
+# Noto Sans Bengali (and Nirmala on Windows) is a Bengali-script font: it has no Latin
+# glyphs, so Latin text rendered with it lands on .notdef and comes out of the PDF as
+# blank boxes and unextractable NUL characters. Only Bengali runs use that font.
+BENGALI_RUN = re.compile(r"[\u0980-\u09ff]+")
+
 
 def _close_open_fence(body: str) -> str:
     """Close a truncated reply's unterminated code fence so it cannot swallow later messages."""
@@ -109,6 +114,13 @@ class DocumentExportService:
                 return regular, bold if bold.is_file() else regular
         return None
 
+    @staticmethod
+    def _markup(text: str, bengali_font: str | None) -> str:
+        """Escaped text with Bengali runs switched to the Bengali font; Latin keeps its own."""
+        if bengali_font is None:
+            return text
+        return BENGALI_RUN.sub(lambda match: f'<font name="{bengali_font}">{match.group(0)}</font>', text)
+
     @classmethod
     def _render_pdf(cls, markdown: str) -> bytes:
         fonts = cls._font_paths()
@@ -117,11 +129,12 @@ class DocumentExportService:
                 "A Bengali TrueType font is required for Bangla PDF exports. Install fonts-noto-core."
             )
         regular_name, bold_name = "Helvetica", "Helvetica-Bold"
+        bengali_regular = bengali_bold = None
         if fonts is not None:
             regular_path, bold_path = fonts
             pdfmetrics.registerFont(TTFont("OmegaExport", str(regular_path), shapable=True))
             pdfmetrics.registerFont(TTFont("OmegaExportBold", str(bold_path), shapable=True))
-            regular_name, bold_name = "OmegaExport", "OmegaExportBold"
+            bengali_regular, bengali_bold = "OmegaExport", "OmegaExportBold"
 
         styles = getSampleStyleSheet()
         title = ParagraphStyle(
@@ -147,12 +160,16 @@ class DocumentExportService:
 
         def flush_paragraph() -> None:
             if paragraph:
-                story.append(Paragraph("<br/>".join(escape(line) for line in paragraph), body))
+                lines = [cls._markup(escape(line), bengali_regular) for line in paragraph]
+                story.append(Paragraph("<br/>".join(lines), body))
                 paragraph.clear()
 
         def flush_code() -> None:
             if code_lines:
-                rendered = [_preserve_indentation(escape(line)) for line in code_lines]
+                rendered = [
+                    cls._markup(_preserve_indentation(escape(line)), bengali_regular)
+                    for line in code_lines
+                ]
                 story.append(Paragraph("<br/>".join(rendered), code))
                 story.append(Spacer(1, 8))
                 code_lines.clear()
@@ -170,10 +187,10 @@ class DocumentExportService:
                 continue
             if line.startswith("# "):
                 flush_paragraph()
-                story.append(Paragraph(escape(line[2:].strip()), title))
+                story.append(Paragraph(cls._markup(escape(line[2:].strip()), bengali_bold), title))
             elif line.startswith("## "):
                 flush_paragraph()
-                story.append(Paragraph(escape(line[3:].strip()), heading))
+                story.append(Paragraph(cls._markup(escape(line[3:].strip()), bengali_bold), heading))
             elif not line.strip():
                 flush_paragraph()
             else:
