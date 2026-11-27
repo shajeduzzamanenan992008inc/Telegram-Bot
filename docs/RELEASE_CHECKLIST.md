@@ -71,7 +71,8 @@
 ## Post-Release
 
 - [ ] Deploy to staging (authorized host)
-- [ ] Smoke test Telegram commands, `/setmode`, Mini App
+- [ ] `sudo python3 /opt/enan-ultra/current/scripts/smoke_deployment.py` on the host exits 0
+- [ ] Smoke test Telegram commands, `/setmode`, Mini App — see [live deployment verification](LIVE_DEPLOY_VERIFICATION.md)
 - [ ] Deploy to production (authorized)
 - [ ] Monitor health and logs
 

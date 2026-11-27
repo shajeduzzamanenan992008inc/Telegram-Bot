@@ -14,6 +14,15 @@ sudo systemctl status telegram-ai
 journalctl -u telegram-ai -f
 ```
 
+### One-command live verification
+```bash
+sudo python3 /opt/enan-ultra/current/scripts/smoke_deployment.py
+```
+
+Read-only: environment file, systemd state, health marker, database, Telegram
+`getMe`, ClamAV socket and Mini App `/healthz`. Exit code 0 means every applicable
+check passed. Full runbook: [LIVE_DEPLOY_VERIFICATION.md](LIVE_DEPLOY_VERIFICATION.md).
+
 ### Restart Gracefully
 ```bash
 sudo systemctl reload telegram-ai  # If supported
