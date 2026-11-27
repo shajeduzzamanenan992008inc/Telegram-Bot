@@ -14,7 +14,7 @@ uploads/
 user_uploads/
 backups/
 instance/
-storage/
+/storage/
 logs/
 *.log
 .telegram-zip-updates/
